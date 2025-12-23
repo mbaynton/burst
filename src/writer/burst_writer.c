@@ -255,7 +255,8 @@ int burst_writer_add_file(struct burst_writer *writer, const char *filename, con
                 return -1;
             }
 
-            // Verify frame header contains content size
+            // Verify frame header contains content size (debug builds only)
+#ifdef DEBUG
             if (verify_frame_content_size(output_buffer, comp_result.compressed_size,
                                            bytes_read) != 0) {
                 free(input_buffer);
@@ -264,6 +265,7 @@ int burst_writer_add_file(struct burst_writer *writer, const char *filename, con
                 fclose(input);
                 return -1;
             }
+#endif
 
             // Write compressed frame
             if (burst_writer_write(writer, output_buffer, comp_result.compressed_size) != 0) {

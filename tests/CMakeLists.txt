@@ -38,6 +38,8 @@ target_link_libraries(burst_writer_lib PUBLIC
     ZLIB::ZLIB
     ${ZSTD_LIBRARY}
 )
+# Enable debug assertions for tests
+target_compile_definitions(burst_writer_lib PUBLIC DEBUG)
 
 # Find Ruby for CMock generation
 find_program(RUBY_EXECUTABLE ruby)
