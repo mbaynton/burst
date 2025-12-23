@@ -91,7 +91,8 @@ struct zip_end_central_dir {
 
 // Function declarations
 int write_local_header(struct burst_writer *writer, const char *filename,
-                      uint16_t compression_method, uint16_t flags);
+                      uint16_t compression_method, uint16_t flags,
+                      uint16_t last_mod_time, uint16_t last_mod_date);
 int write_data_descriptor(struct burst_writer *writer, uint32_t crc32,
                           uint64_t compressed_size, uint64_t uncompressed_size);
 int write_central_directory(struct burst_writer *writer);

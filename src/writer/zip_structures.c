@@ -32,7 +32,8 @@ size_t get_central_header_size(const char *filename) {
 }
 
 int write_local_header(struct burst_writer *writer, const char *filename,
-                      uint16_t compression_method, uint16_t flags) {
+                      uint16_t compression_method, uint16_t flags,
+                      uint16_t last_mod_time, uint16_t last_mod_date) {
     struct zip_local_header header;
     memset(&header, 0, sizeof(header));
 
@@ -42,10 +43,8 @@ int write_local_header(struct burst_writer *writer, const char *filename,
                            ZIP_VERSION_STORE;
     header.flags = flags;
     header.compression_method = compression_method;
-
-    // Get current time
-    time_t now = time(NULL);
-    dos_datetime_from_time_t(now, &header.last_mod_time, &header.last_mod_date);
+    header.last_mod_time = last_mod_time;
+    header.last_mod_date = last_mod_date;
 
     // CRC, sizes will be in data descriptor
     header.crc32 = 0;

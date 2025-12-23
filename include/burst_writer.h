@@ -24,8 +24,8 @@ struct file_entry {
     uint16_t compression_method;
     uint16_t version_needed;
     uint16_t general_purpose_flags;
-    uint32_t last_mod_time;
-    uint32_t last_mod_date;
+    uint16_t last_mod_time;
+    uint16_t last_mod_date;
 };
 
 // BURST writer context

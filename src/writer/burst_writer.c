@@ -174,8 +174,13 @@ int burst_writer_add_file(struct burst_writer *writer, const char *filename, con
     entry->version_needed = ZIP_VERSION_STORE;
     entry->general_purpose_flags = ZIP_FLAG_DATA_DESCRIPTOR;
 
+    // Get current time for timestamp
+    time_t now = time(NULL);
+    dos_datetime_from_time_t(now, &entry->last_mod_time, &entry->last_mod_date);
+
     // Write local file header
-    if (write_local_header(writer, filename, entry->compression_method, entry->general_purpose_flags) != 0) {
+    if (write_local_header(writer, filename, entry->compression_method, entry->general_purpose_flags,
+                          entry->last_mod_time, entry->last_mod_date) != 0) {
         free(entry->filename);
         fclose(input);
         return -1;
