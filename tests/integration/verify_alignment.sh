@@ -58,7 +58,7 @@ identify_magic() {
     local magic=$1
     case "$magic" in
         "504b0304")
-            echo "ZIP local file header"
+            echo "ZIP local file header -- GOOD"
             return 0
             ;;
         "504b0102")
@@ -78,7 +78,7 @@ identify_magic() {
             return 0
             ;;
         "184d2a5b"|"5b2a4d18")
-            echo "Zstandard skippable frame (BURST padding/metadata)"
+            echo "Zstandard skippable frame (BURST padding/metadata) -- GOOD"
             return 0
             ;;
         *)
@@ -108,9 +108,13 @@ for ((i=1; i<=NUM_BOUNDARIES; i++)); do
 
     # Get magic number at boundary
     MAGIC=$(get_magic_hex "$OFFSET")
+    set +e
     IDENTIFIED=$(identify_magic "$MAGIC")
-    RESULT=$?
-
+    set -e
+    RESULT=1
+    if [[ "${IDENTIFIED}" =~ "GOOD" ]]; then
+        RESULT=0
+    fi
     # Display hex dump at boundary (16 bytes)
     echo -n "  Hex dump: "
     dd if="$ARCHIVE" bs=1 skip="$OFFSET" count=16 2>/dev/null | xxd -p -c 16
