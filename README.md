@@ -12,7 +12,7 @@ BURST creates ZIP archives with 8 MiB alignment boundaries, enabling:
 ## Current Status
 
 ### ✅ Phase 1 Complete: Basic ZIP Writer
-- Creates valid ZIP archives with STORE (uncompressed) method
+- Creates valid ZIP archives with proper structure
 - Proper ZIP structure (local headers, data descriptors, central directory)
 - Compatible with standard ZIP tools (unzip, 7z, zipinfo)
 - Comprehensive test suite with 100% pass rate
@@ -30,7 +30,8 @@ BURST creates ZIP archives with 8 MiB alignment boundaries, enabling:
 - Start-of-Part metadata frames for file continuations across boundaries
 - Special handling for data descriptor placement edge cases
 - Padding overhead <1% (typically 0.8%)
-- Comprehensive unit tests (11 alignment tests) and integration tests (7 scenarios)
+- **Zstandard-only compression** (STORE method removed - incompatible with alignment)
+- Comprehensive unit tests (11 alignment tests) and integration tests (6 scenarios)
 - Hex dump validation tools for boundary verification
 
 ### 🚧 In Development

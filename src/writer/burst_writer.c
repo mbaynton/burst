@@ -173,16 +173,18 @@ int burst_writer_add_file(struct burst_writer *writer, const char *filename, con
 
     entry->local_header_offset = writer->current_offset + writer->buffer_used;
 
-    // Determine compression method based on compression level
-    // Level 0 = STORE (uncompressed), otherwise use Zstandard
-    if (writer->compression_level == 0 || file_size == 0) {
+    // Phase 3: Use Zstandard compression (required for alignment)
+    // Exception: Empty files use STORE method (nothing to compress)
+    // STORE method is otherwise incompatible with Zstandard skippable frames used for alignment
+    if (file_size == 0) {
         entry->compression_method = ZIP_METHOD_STORE;
         entry->version_needed = ZIP_VERSION_STORE;
+        entry->general_purpose_flags = ZIP_FLAG_DATA_DESCRIPTOR;
     } else {
         entry->compression_method = ZIP_METHOD_ZSTD;
         entry->version_needed = ZIP_VERSION_ZSTD;
+        entry->general_purpose_flags = ZIP_FLAG_DATA_DESCRIPTOR;
     }
-    entry->general_purpose_flags = ZIP_FLAG_DATA_DESCRIPTOR;
 
     // Get current time for timestamp
     time_t now = time(NULL);
@@ -203,28 +205,37 @@ int burst_writer_add_file(struct burst_writer *writer, const char *filename, con
     uint32_t crc = 0;
     uint64_t total_uncompressed = 0;
 
-    if (entry->compression_method == ZIP_METHOD_STORE) {
-        // STORE method: copy data uncompressed
-        uint8_t buffer[8192];
-        size_t bytes_read;
+    // ZSTD method: compress in 128 KiB chunks
+    #define ZSTD_CHUNK_SIZE (128 * 1024)  // 128 KiB chunks (BTRFS maximum)
+    uint8_t *input_buffer = malloc(ZSTD_CHUNK_SIZE);
+    uint8_t *output_buffer = malloc(ZSTD_compressBound(ZSTD_CHUNK_SIZE));
 
-        while ((bytes_read = fread(buffer, 1, sizeof(buffer), input)) > 0) {
-            crc = crc32(crc, buffer, bytes_read);
-            if (burst_writer_write(writer, buffer, bytes_read) != 0) {
-                free(entry->filename);
-                fclose(input);
-                return -1;
-            }
-            total_uncompressed += bytes_read;
-        }
-    } else {
-        // ZSTD method: compress in 128 KiB chunks
-        #define ZSTD_CHUNK_SIZE (128 * 1024)  // 128 KiB chunks (BTRFS maximum)
-        uint8_t *input_buffer = malloc(ZSTD_CHUNK_SIZE);
-        uint8_t *output_buffer = malloc(ZSTD_compressBound(ZSTD_CHUNK_SIZE));
+    if (!input_buffer || !output_buffer) {
+        fprintf(stderr, "Failed to allocate compression buffers\n");
+        free(input_buffer);
+        free(output_buffer);
+        free(entry->filename);
+        fclose(input);
+        return -1;
+    }
 
-        if (!input_buffer || !output_buffer) {
-            fprintf(stderr, "Failed to allocate compression buffers\n");
+    size_t bytes_read;
+    bool needs_descriptor_alignment = false;
+
+    while ((bytes_read = fread(input_buffer, 1, ZSTD_CHUNK_SIZE, input)) > 0) {
+        // Compute CRC32 of uncompressed data
+        crc = crc32(crc, input_buffer, bytes_read);
+        total_uncompressed += bytes_read;
+
+        // Compress chunk using new mockable API
+        struct compression_result comp_result = compress_chunk(
+            output_buffer, ZSTD_compressBound(ZSTD_CHUNK_SIZE),
+            input_buffer, bytes_read,
+            writer->compression_level);
+
+        if (comp_result.error) {
+            fprintf(stderr, "Zstandard compression error: %s\n",
+                    comp_result.error_message);
             free(input_buffer);
             free(output_buffer);
             free(entry->filename);
@@ -232,126 +243,101 @@ int burst_writer_add_file(struct burst_writer *writer, const char *filename, con
             return -1;
         }
 
-        size_t bytes_read;
-        bool needs_descriptor_alignment = false;
-
-        while ((bytes_read = fread(input_buffer, 1, ZSTD_CHUNK_SIZE, input)) > 0) {
-            // Compute CRC32 of uncompressed data
-            crc = crc32(crc, input_buffer, bytes_read);
-            total_uncompressed += bytes_read;
-
-            // Compress chunk using new mockable API
-            struct compression_result comp_result = compress_chunk(
-                output_buffer, ZSTD_compressBound(ZSTD_CHUNK_SIZE),
-                input_buffer, bytes_read,
-                writer->compression_level);
-
-            if (comp_result.error) {
-                fprintf(stderr, "Zstandard compression error: %s\n",
-                        comp_result.error_message);
-                free(input_buffer);
-                free(output_buffer);
-                free(entry->filename);
-                fclose(input);
-                return -1;
-            }
-
-            // Verify frame header contains content size (debug builds only)
+        // Verify frame header contains content size (debug builds only)
 #ifdef DEBUG
-            if (verify_frame_content_size(output_buffer, comp_result.compressed_size,
-                                           bytes_read) != 0) {
-                free(input_buffer);
-                free(output_buffer);
-                free(entry->filename);
-                fclose(input);
-                return -1;
-            }
+        if (verify_frame_content_size(output_buffer, comp_result.compressed_size,
+                                       bytes_read) != 0) {
+            free(input_buffer);
+            free(output_buffer);
+            free(entry->filename);
+            fclose(input);
+            return -1;
+        }
 #endif
 
-            // Phase 3: Check alignment before writing frame
-            uint64_t write_pos = alignment_get_write_position(writer);
-            bool at_eof = (bytes_read < ZSTD_CHUNK_SIZE) || feof(input);
+        // Phase 3: Check alignment before writing frame
+        uint64_t write_pos = alignment_get_write_position(writer);
+        bool at_eof = (bytes_read < ZSTD_CHUNK_SIZE) || feof(input);
 
-            struct alignment_decision decision = alignment_decide(
-                write_pos,
-                comp_result.compressed_size,
-                at_eof,
-                false  // Not a new file (we're mid-file)
-            );
+        struct alignment_decision decision = alignment_decide(
+            write_pos,
+            comp_result.compressed_size,
+            at_eof,
+            false  // Not a new file (we're mid-file)
+        );
 
-            // Execute alignment actions
-            if (decision.action == ALIGNMENT_PAD_THEN_FRAME) {
-                // Write padding to reach boundary
-                if (alignment_write_padding_frame(writer, decision.padding_size) != 0) {
-                    free(input_buffer);
-                    free(output_buffer);
-                    free(entry->filename);
-                    fclose(input);
-                    return -1;
-                }
-                writer->padding_bytes += decision.padding_size + 8;
-            } else if (decision.action == ALIGNMENT_PAD_THEN_METADATA) {
-                // Write padding, then Start-of-Part metadata
-                if (alignment_write_padding_frame(writer, decision.padding_size) != 0) {
-                    free(input_buffer);
-                    free(output_buffer);
-                    free(entry->filename);
-                    fclose(input);
-                    return -1;
-                }
-                writer->padding_bytes += decision.padding_size + 8;
-
-                // Write Start-of-Part frame with current uncompressed offset
-                if (alignment_write_start_of_part_frame(writer, total_uncompressed - bytes_read) != 0) {
-                    free(input_buffer);
-                    free(output_buffer);
-                    free(entry->filename);
-                    fclose(input);
-                    return -1;
-                }
-                writer->padding_bytes += 24;
-            }
-
-            // If data descriptor won't fit before boundary, mark for later handling
-            if (at_eof && decision.descriptor_after_boundary) {
-                needs_descriptor_alignment = true;
-            }
-
-            // Write compressed frame
-            if (burst_writer_write(writer, output_buffer, comp_result.compressed_size) != 0) {
+        // Execute alignment actions
+        if (decision.action == ALIGNMENT_PAD_THEN_FRAME) {
+            // Write padding to reach boundary
+            if (alignment_write_padding_frame(writer, decision.padding_size) != 0) {
                 free(input_buffer);
                 free(output_buffer);
                 free(entry->filename);
                 fclose(input);
                 return -1;
             }
-        }
-
-        free(input_buffer);
-        free(output_buffer);
-
-        // Phase 3: Handle data descriptor alignment if needed
-        if (needs_descriptor_alignment) {
-            uint64_t write_pos = alignment_get_write_position(writer);
-            uint64_t space_until_boundary = alignment_next_boundary(write_pos) - write_pos;
-
-            // Pad to boundary
-            size_t padding_size = (size_t)(space_until_boundary - 8);
-            if (alignment_write_padding_frame(writer, padding_size) != 0) {
+            writer->padding_bytes += decision.padding_size + 8;
+        } else if (decision.action == ALIGNMENT_PAD_THEN_METADATA) {
+            // Write padding, then Start-of-Part metadata
+            if (alignment_write_padding_frame(writer, decision.padding_size) != 0) {
+                free(input_buffer);
+                free(output_buffer);
                 free(entry->filename);
                 fclose(input);
                 return -1;
             }
-            writer->padding_bytes += padding_size + 8;
+            writer->padding_bytes += decision.padding_size + 8;
 
-            // Write Start-of-Part frame (marks boundary where descriptor starts)
-            if (alignment_write_start_of_part_frame(writer, total_uncompressed) != 0) {
+            // Write Start-of-Part frame with current uncompressed offset
+            if (alignment_write_start_of_part_frame(writer, total_uncompressed - bytes_read) != 0) {
+                free(input_buffer);
+                free(output_buffer);
                 free(entry->filename);
                 fclose(input);
                 return -1;
             }
             writer->padding_bytes += 24;
         }
+
+        // If data descriptor won't fit before boundary, mark for later handling
+        if (at_eof && decision.descriptor_after_boundary) {
+            needs_descriptor_alignment = true;
+        }
+
+        // Write compressed frame
+        if (burst_writer_write(writer, output_buffer, comp_result.compressed_size) != 0) {
+            free(input_buffer);
+            free(output_buffer);
+            free(entry->filename);
+            fclose(input);
+            return -1;
+        }
+    }
+
+    free(input_buffer);
+    free(output_buffer);
+
+    // Phase 3: Handle data descriptor alignment if needed
+    if (needs_descriptor_alignment) {
+        uint64_t write_pos = alignment_get_write_position(writer);
+        uint64_t space_until_boundary = alignment_next_boundary(write_pos) - write_pos;
+
+        // Pad to boundary
+        size_t padding_size = (size_t)(space_until_boundary - 8);
+        if (alignment_write_padding_frame(writer, padding_size) != 0) {
+            free(entry->filename);
+            fclose(input);
+            return -1;
+        }
+        writer->padding_bytes += padding_size + 8;
+
+        // Write Start-of-Part frame (marks boundary where descriptor starts)
+        if (alignment_write_start_of_part_frame(writer, total_uncompressed) != 0) {
+            free(entry->filename);
+            fclose(input);
+            return -1;
+        }
+        writer->padding_bytes += 24;
     }
 
     if (ferror(input)) {
@@ -368,10 +354,9 @@ int burst_writer_add_file(struct burst_writer *writer, const char *filename, con
     uint64_t current_pos = writer->current_offset + writer->buffer_used;
     uint64_t total_compressed = current_pos - entry->compressed_start_offset;
 
-    // Check if compression was worthwhile
-    if (entry->compression_method == ZIP_METHOD_ZSTD && total_compressed >= total_uncompressed) {
-        // Compressed size is larger - should have used STORE
-        // For Phase 2, we'll just accept this. Phase 3 will add proper fallback logic.
+    // Check if compression achieved size reduction
+    // Note: Phase 3 requires Zstandard for alignment; STORE method not supported
+    if (total_compressed >= total_uncompressed) {
         printf("Warning: Compressed size (%lu) >= uncompressed (%lu) for %s\n",
                (unsigned long)total_compressed, (unsigned long)total_uncompressed, filename);
     }

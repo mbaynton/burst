@@ -218,23 +218,6 @@ fi
 echo "✓ Padding statistics test passed"
 echo
 
-# Test 7: Store method (uncompressed) alignment
-echo "Test 7: Store method (compression level 0) with boundary crossing..."
-create_test_file "store_test.bin" $((10 * 1024 * 1024))
-"$BUILD_DIR/burst-writer" -l 0 -o test7.zip store_test.bin > test7_out.txt 2>&1
-
-# Verify archive is valid
-run_7z t test7.zip 2>&1 | grep -q "Everything is Ok" || { echo "❌ Failed: Archive invalid"; exit 1; }
-
-# Extract and verify
-mkdir -p extract7
-cd extract7
-run_7z x -y ../test7.zip 2>&1 | grep -q "Everything is Ok" || { echo "❌ Failed: Extraction failed"; exit 1; }
-cmp store_test.bin ../store_test.bin || { echo "❌ Failed: Extracted file differs"; exit 1; }
-cd ..
-echo "✓ Store method alignment test passed"
-echo
-
 echo "=== All Phase 3 alignment integration tests passed ✓ ==="
 echo
 echo "Summary:"
@@ -244,6 +227,5 @@ echo "  - Exact 8 MiB files work correctly"
 echo "  - Critical edge case (file > 8 MiB) handles descriptor placement"
 echo "  - Multiple boundary crossings work correctly"
 echo "  - Padding overhead is minimal"
-echo "  - Store method (uncompressed) respects alignment"
 echo
 echo "All archives extract correctly with 7-Zip!"
