@@ -24,8 +24,16 @@ BURST creates ZIP archives with 8 MiB alignment boundaries, enabling:
 - Unit tests with CMock framework for compression logic
 - Integration tests validating Zstandard archive compatibility
 
+### ✅ Phase 3 Complete: 8 MiB Alignment
+- All 8 MiB boundaries align to ZIP headers or Zstandard frame starts
+- Zstandard skippable padding frames (0x184D2A5B magic) for alignment
+- Start-of-Part metadata frames for file continuations across boundaries
+- Special handling for data descriptor placement edge cases
+- Padding overhead <1% (typically 0.8%)
+- Comprehensive unit tests (11 alignment tests) and integration tests (7 scenarios)
+- Hex dump validation tools for boundary verification
+
 ### 🚧 In Development
-- Phase 3: 8 MiB alignment with padding frames
 - Phase 4: ZIP64 support for files >4 GiB
 - Phase 5: Archive downloader with aws-c-s3 integration
 
@@ -114,6 +122,9 @@ ctest
 
 # Writer chunking tests (128 KiB boundaries with mocks)
 ./build/tests/test_writer_chunking
+
+# Alignment tests (Phase 3 - 8 MiB boundary alignment)
+./build/tests/test_alignment
 ```
 
 #### Integration Tests
@@ -126,11 +137,20 @@ bash tests/integration/test_zip_compatibility.sh
 
 # Zstandard compression (requires 7zz from 7-zip.org)
 bash tests/integration/test_zstd_compression.sh
+
+# Phase 3 alignment integration tests
+bash tests/integration/test_alignment_integration.sh
+```
+
+#### Validation Tools
+```bash
+# Verify 8 MiB boundary alignment in any archive
+bash tests/integration/verify_alignment.sh <archive.zip>
 ```
 
 ### Test Coverage
 
-#### Unit Tests (26 tests)
+#### Unit Tests (37 tests)
 - ✅ DOS datetime conversion (epoch and normal dates)
 - ✅ Header size calculations (local and central directory)
 - ✅ Writer creation and destruction
@@ -141,6 +161,10 @@ bash tests/integration/test_zstd_compression.sh
 - ✅ 128 KiB chunk boundary behavior (mocked)
 - ✅ Compression method selection
 - ✅ Multi-chunk file handling
+- ✅ 8 MiB boundary alignment decisions (11 scenarios)
+- ✅ Padding frame insertion logic
+- ✅ Start-of-Part metadata frame generation
+- ✅ Data descriptor placement edge cases
 
 #### Integration Tests
 - ✅ Single and multiple file archives
@@ -153,11 +177,17 @@ bash tests/integration/test_zstd_compression.sh
 - ✅ Zstandard archive extraction and verification
 - ✅ Compression method detection (method 93)
 - ✅ Compression ratio validation
+- ✅ Large files crossing 8 MiB boundaries (10 MiB, 20 MiB)
+- ✅ Multiple files with boundary crossings
+- ✅ Exact 8 MiB file alignment
+- ✅ Critical edge case: files slightly over 8 MiB (descriptor placement)
+- ✅ Padding overhead verification (<1%)
+- ✅ Hex dump boundary validation
 
 ### Test Results
 ```
-100% tests passed, 0 tests failed out of 8
-Total Test time (real) = 0.15 sec
+100% tests passed, 0 tests failed out of 9
+Total Test time (real) = 0.13 sec
 ```
 
 ### Test Framework
@@ -179,12 +209,14 @@ burst/
 ├── include/
 │   ├── burst_writer.h      # Writer API and data structures
 │   ├── zip_structures.h    # ZIP format definitions
-│   └── compression.h       # Compression abstraction layer
+│   ├── compression.h       # Compression abstraction layer
+│   └── alignment.h         # Phase 3: 8 MiB alignment logic
 ├── src/writer/
 │   ├── main.c              # CLI interface
 │   ├── burst_writer.c      # Core writer implementation
 │   ├── zip_structures.c    # ZIP format writing
-│   └── compression.c       # Zstandard compression wrapper
+│   ├── compression.c       # Zstandard compression wrapper
+│   └── alignment.c         # Phase 3: Alignment decision logic
 ├── tests/
 │   ├── CMakeLists.txt      # Test build configuration
 │   ├── cmock_config.yml    # CMock configuration
@@ -197,14 +229,17 @@ burst/
 │   │   ├── test_writer_core.c
 │   │   ├── test_crc32.c
 │   │   ├── test_zstd_frames.c
-│   │   └── test_writer_chunking.c
+│   │   ├── test_writer_chunking.c
+│   │   └── test_alignment.c
 │   ├── mocks/              # Mock headers for CMock
 │   │   ├── compression_mock.h
 │   │   └── zstd_mock.h
 │   ├── integration/        # Integration test scripts
 │   │   ├── test_writer_basic.sh
 │   │   ├── test_zip_compatibility.sh
-│   │   └── test_zstd_compression.sh
+│   │   ├── test_zstd_compression.sh
+│   │   ├── test_alignment_integration.sh
+│   │   └── verify_alignment.sh
 │   └── fixtures/           # Test data files
 └── tmp/                    # Local testing (gitignored)
 ```

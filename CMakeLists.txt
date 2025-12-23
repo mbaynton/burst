@@ -36,6 +36,7 @@ add_executable(burst-writer
     src/writer/burst_writer.c
     src/writer/zip_structures.c
     src/writer/compression.c
+    src/writer/alignment.c
 )
 
 target_include_directories(burst-writer PRIVATE

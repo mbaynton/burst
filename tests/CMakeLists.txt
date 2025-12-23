@@ -29,6 +29,7 @@ add_library(burst_writer_lib STATIC
     ../src/writer/burst_writer.c
     ../src/writer/zip_structures.c
     ../src/writer/compression.c
+    ../src/writer/alignment.c
 )
 target_include_directories(burst_writer_lib PUBLIC
     ../include
@@ -108,6 +109,7 @@ add_unit_test(test_zip_structures)
 add_unit_test(test_writer_core)
 add_unit_test(test_crc32)
 add_unit_test(test_zstd_frames)
+add_unit_test(test_alignment)
 
 # Mocked unit tests
 add_mocked_test(test_writer_chunking

@@ -50,6 +50,9 @@ struct burst_writer {
     uint64_t total_uncompressed;
     uint64_t total_compressed;
     uint64_t padding_bytes;
+
+    // Phase 3: Alignment tracking
+    uint64_t current_uncompressed_offset;  // Track uncompressed position within current file
 };
 
 // Writer API

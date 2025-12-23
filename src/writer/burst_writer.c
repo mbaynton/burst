@@ -1,6 +1,7 @@
 #include "burst_writer.h"
 #include "zip_structures.h"
 #include "compression.h"
+#include "alignment.h"
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
@@ -201,7 +202,6 @@ int burst_writer_add_file(struct burst_writer *writer, const char *filename, con
     // Read and compress file data
     uint32_t crc = 0;
     uint64_t total_uncompressed = 0;
-    uint64_t total_compressed = 0;
 
     if (entry->compression_method == ZIP_METHOD_STORE) {
         // STORE method: copy data uncompressed
@@ -216,7 +216,6 @@ int burst_writer_add_file(struct burst_writer *writer, const char *filename, con
                 return -1;
             }
             total_uncompressed += bytes_read;
-            total_compressed += bytes_read;
         }
     } else {
         // ZSTD method: compress in 128 KiB chunks
@@ -234,6 +233,8 @@ int burst_writer_add_file(struct burst_writer *writer, const char *filename, con
         }
 
         size_t bytes_read;
+        bool needs_descriptor_alignment = false;
+
         while ((bytes_read = fread(input_buffer, 1, ZSTD_CHUNK_SIZE, input)) > 0) {
             // Compute CRC32 of uncompressed data
             crc = crc32(crc, input_buffer, bytes_read);
@@ -267,6 +268,55 @@ int burst_writer_add_file(struct burst_writer *writer, const char *filename, con
             }
 #endif
 
+            // Phase 3: Check alignment before writing frame
+            uint64_t write_pos = alignment_get_write_position(writer);
+            bool at_eof = (bytes_read < ZSTD_CHUNK_SIZE) || feof(input);
+
+            struct alignment_decision decision = alignment_decide(
+                write_pos,
+                comp_result.compressed_size,
+                at_eof,
+                false  // Not a new file (we're mid-file)
+            );
+
+            // Execute alignment actions
+            if (decision.action == ALIGNMENT_PAD_THEN_FRAME) {
+                // Write padding to reach boundary
+                if (alignment_write_padding_frame(writer, decision.padding_size) != 0) {
+                    free(input_buffer);
+                    free(output_buffer);
+                    free(entry->filename);
+                    fclose(input);
+                    return -1;
+                }
+                writer->padding_bytes += decision.padding_size + 8;
+            } else if (decision.action == ALIGNMENT_PAD_THEN_METADATA) {
+                // Write padding, then Start-of-Part metadata
+                if (alignment_write_padding_frame(writer, decision.padding_size) != 0) {
+                    free(input_buffer);
+                    free(output_buffer);
+                    free(entry->filename);
+                    fclose(input);
+                    return -1;
+                }
+                writer->padding_bytes += decision.padding_size + 8;
+
+                // Write Start-of-Part frame with current uncompressed offset
+                if (alignment_write_start_of_part_frame(writer, total_uncompressed - bytes_read) != 0) {
+                    free(input_buffer);
+                    free(output_buffer);
+                    free(entry->filename);
+                    fclose(input);
+                    return -1;
+                }
+                writer->padding_bytes += 24;
+            }
+
+            // If data descriptor won't fit before boundary, mark for later handling
+            if (at_eof && decision.descriptor_after_boundary) {
+                needs_descriptor_alignment = true;
+            }
+
             // Write compressed frame
             if (burst_writer_write(writer, output_buffer, comp_result.compressed_size) != 0) {
                 free(input_buffer);
@@ -275,12 +325,33 @@ int burst_writer_add_file(struct burst_writer *writer, const char *filename, con
                 fclose(input);
                 return -1;
             }
-
-            total_compressed += comp_result.compressed_size;
         }
 
         free(input_buffer);
         free(output_buffer);
+
+        // Phase 3: Handle data descriptor alignment if needed
+        if (needs_descriptor_alignment) {
+            uint64_t write_pos = alignment_get_write_position(writer);
+            uint64_t space_until_boundary = alignment_next_boundary(write_pos) - write_pos;
+
+            // Pad to boundary
+            size_t padding_size = (size_t)(space_until_boundary - 8);
+            if (alignment_write_padding_frame(writer, padding_size) != 0) {
+                free(entry->filename);
+                fclose(input);
+                return -1;
+            }
+            writer->padding_bytes += padding_size + 8;
+
+            // Write Start-of-Part frame (marks boundary where descriptor starts)
+            if (alignment_write_start_of_part_frame(writer, total_uncompressed) != 0) {
+                free(entry->filename);
+                fclose(input);
+                return -1;
+            }
+            writer->padding_bytes += 24;
+        }
     }
 
     if (ferror(input)) {
@@ -291,6 +362,11 @@ int burst_writer_add_file(struct burst_writer *writer, const char *filename, con
     }
 
     fclose(input);
+
+    // Calculate actual compressed size (includes padding and metadata frames)
+    // This is the total bytes written between local header and data descriptor
+    uint64_t current_pos = writer->current_offset + writer->buffer_used;
+    uint64_t total_compressed = current_pos - entry->compressed_start_offset;
 
     // Check if compression was worthwhile
     if (entry->compression_method == ZIP_METHOD_ZSTD && total_compressed >= total_uncompressed) {
@@ -305,7 +381,7 @@ int burst_writer_add_file(struct burst_writer *writer, const char *filename, con
     entry->uncompressed_size = total_uncompressed;
     entry->crc32 = crc;
 
-    // Write data descriptor
+    // Write data descriptor (now properly aligned)
     if (write_data_descriptor(writer, entry->crc32, entry->compressed_size, entry->uncompressed_size) != 0) {
         free(entry->filename);
         return -1;
