@@ -26,7 +26,15 @@ echo
 create_test_file() {
     local filename="$1"
     local size="$2"
-    dd if=/dev/urandom of="$filename" bs=1 count="$size" 2>/dev/null
+    # Use 1 MiB blocks for much faster file creation
+    local bs=$((1024 * 1024))  # 1 MiB
+    local count=$((size / bs))
+    local remainder=$((size % bs))
+
+    dd if=/dev/urandom of="$filename" bs="$bs" count="$count" 2>/dev/null
+    if [ "$remainder" -gt 0 ]; then
+        dd if=/dev/urandom of="$filename" bs=1 count="$remainder" oflag=append conv=notrunc 2>/dev/null
+    fi
 }
 
 # Helper: Check if offset is at 8 MiB boundary
@@ -64,7 +72,6 @@ fi
 magic=$(get_magic_at_offset test1.zip $((8 * 1024 * 1024)))
 case "$magic" in
     "504b0304") echo "  ✓ 8 MiB boundary: ZIP local header" ;;
-    "fd2fb528") echo "  ✓ 8 MiB boundary: Zstandard frame" ;;
     "5b2a4d18") echo "  ✓ 8 MiB boundary: Skippable frame (Start-of-Part)" ;;
     *) echo "❌ Failed: Invalid magic at 8 MiB boundary: $magic"; exit 1 ;;
 esac
@@ -141,7 +148,6 @@ magic=$(get_magic_at_offset test4.zip $((8 * 1024 * 1024)))
 case "$magic" in
     "08074b50") echo "  ✓ 8 MiB boundary: Data descriptor (edge case handled correctly)" ;;
     "5b2a4d18") echo "  ✓ 8 MiB boundary: Skippable frame (Start-of-Part before descriptor)" ;;
-    "fd2fb528") echo "  ✓ 8 MiB boundary: Zstandard frame" ;;
     *) echo "⚠ Warning: Unexpected magic at 8 MiB boundary: $magic (may be valid)" ;;
 esac
 
@@ -167,7 +173,7 @@ for boundary_mb in 8 16; do
     boundary_offset=$((boundary_mb * 1024 * 1024))
     magic=$(get_magic_at_offset test5.zip "$boundary_offset")
     case "$magic" in
-        "504b0304"|"fd2fb528"|"5b2a4d18")
+        "504b0304"|"5b2a4d18")
             echo "  ✓ ${boundary_mb} MiB boundary aligned correctly (magic: $magic)"
             ;;
         *)
