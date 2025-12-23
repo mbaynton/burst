@@ -1,0 +1,35 @@
+# Build directories
+build/
+cmake-build-*/
+
+# Build artifacts
+*.o
+*.a
+*.so
+*.dylib
+burst-writer
+burst-downloader
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Test artifacts
+*.zip
+*.burst
+test_output/
+
+# OS files
+.DS_Store
+Thumbs.db
