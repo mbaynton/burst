@@ -45,12 +45,4 @@ install(TARGETS burst-writer DESTINATION bin)
 
 # Testing
 enable_testing()
-
-# Integration tests
-add_test(NAME test_writer_basic
-         COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/test_writer_basic.sh
-         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
-
-add_test(NAME test_zip_compatibility
-         COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/test_zip_compatibility.sh
-         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_subdirectory(tests)

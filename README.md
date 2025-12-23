@@ -66,6 +66,20 @@ ctest
 ```
 
 ### Run Individual Tests
+
+#### Unit Tests
+```bash
+# ZIP structure tests (DOS datetime, header sizes)
+./build/tests/test_zip_structures
+
+# Writer core tests (buffering, flushing)
+./build/tests/test_writer_core
+
+# CRC32 calculation tests
+./build/tests/test_crc32
+```
+
+#### Integration Tests
 ```bash
 # Basic writer functionality
 bash tests/integration/test_writer_basic.sh
@@ -75,6 +89,16 @@ bash tests/integration/test_zip_compatibility.sh
 ```
 
 ### Test Coverage
+
+#### Unit Tests (20 tests)
+- ✅ DOS datetime conversion (epoch and normal dates)
+- ✅ Header size calculations (local and central directory)
+- ✅ Writer creation and destruction
+- ✅ Buffered writing and flushing
+- ✅ CRC32 calculation with known values
+- ✅ CRC32 incremental calculation
+
+#### Integration Tests
 - ✅ Single and multiple file archives
 - ✅ Empty file handling
 - ✅ Special characters in filenames
@@ -84,9 +108,15 @@ bash tests/integration/test_zip_compatibility.sh
 
 ### Test Results
 ```
-100% tests passed, 0 tests failed out of 2
-Total Test time (real) = 0.10 sec
+100% tests passed, 0 tests failed out of 5
+Total Test time (real) = 0.07 sec
 ```
+
+### Test Framework
+- **Unity**: Lightweight C unit testing framework
+- Located in `tests/unity/`
+- Unit tests in `tests/unit/`
+- Integration tests in `tests/integration/`
 
 ## Project Structure
 
@@ -104,8 +134,19 @@ burst/
 │   ├── burst_writer.c      # Core writer implementation
 │   └── zip_structures.c    # ZIP format writing
 ├── tests/
-│   ├── fixtures/           # Test data files
-│   └── integration/        # Integration test scripts
+│   ├── CMakeLists.txt      # Test build configuration
+│   ├── unity/              # Unity test framework
+│   │   ├── unity.c
+│   │   ├── unity.h
+│   │   └── unity_internals.h
+│   ├── unit/               # Unit tests
+│   │   ├── test_zip_structures.c
+│   │   ├── test_writer_core.c
+│   │   └── test_crc32.c
+│   ├── integration/        # Integration test scripts
+│   │   ├── test_writer_basic.sh
+│   │   └── test_zip_compatibility.sh
+│   └── fixtures/           # Test data files
 └── tmp/                    # Local testing (gitignored)
 ```
 
