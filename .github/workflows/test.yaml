@@ -12,8 +12,17 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y libzstd-dev zlib1g-dev cmake
-        sudo apt-get install -y unzip p7zip-full
+        sudo apt-get install -y libzstd-dev zlib1g-dev cmake ruby unzip
+
+    - name: Install 7-Zip with Zstandard support
+      run: |
+        # Download official 7-Zip from 7-zip.org (includes Zstandard codec)
+        # Note: Ubuntu/Debian's p7zip-full package strips Zstandard for DFSG compliance
+        wget https://www.7-zip.org/a/7z2408-linux-x64.tar.xz
+        tar -xf 7z2408-linux-x64.tar.xz
+        sudo cp 7zz /usr/local/bin/
+        sudo chmod +x /usr/local/bin/7zz
+        7zz --help | head -2
 
     - name: Build
       run: |

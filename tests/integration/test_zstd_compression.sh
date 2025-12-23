@@ -9,9 +9,11 @@ BUILD_DIR="$PROJECT_ROOT/build"
 FIXTURES_DIR="$PROJECT_ROOT/tests/fixtures"
 TEST_TMP="$PROJECT_ROOT/tests/tmp"
 
-# Wine command for 7z-zstd - use function to handle spaces
+# Use native 7zz with Zstandard support from 7-zip.org
+# Note: Ubuntu/Debian's packaged 7zip strips Zstandard codec (DFSG compliance)
+# Download from: https://www.7-zip.org/download.html
 function run_7z() {
-    wine "/home/$USER/.wine/dosdevices/c:/Program Files/7-Zip-Zstandard/7z.exe" "$@"
+    7zz "$@"
 }
 
 # Clean and create test directory
