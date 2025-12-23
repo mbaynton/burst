@@ -20,9 +20,9 @@ void test_dos_datetime_epoch(void) {
 
     // localtime() succeeds for Unix epoch, so it encodes a date/time
     // Even though it's before DOS epoch (1980), the function doesn't check
-    // Just verify the function doesn't crash and produces values
-    TEST_ASSERT_NOT_EQUAL(0, time);  // Should have encoded time
-    TEST_ASSERT_NOT_EQUAL(0, date);  // Should have encoded date
+    // Just verify the function doesn't crash and produces a valid date
+    // Note: time may be 0 in UTC timezone (midnight), but date should be non-zero
+    TEST_ASSERT_NOT_EQUAL(0, date);  // Should have encoded date (1969 or 1970 depending on timezone)
 }
 
 // Test DOS date/time conversion with normal date
