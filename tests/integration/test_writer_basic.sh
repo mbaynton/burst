@@ -19,13 +19,13 @@ echo
 
 # Test 1: Single file
 echo "Test 1: Single small file..."
-"$BUILD_DIR/burst-writer" -o single.zip "$FIXTURES_DIR/small.txt" > /dev/null
+"$BUILD_DIR/burst-writer" -l 0 -o single.zip "$FIXTURES_DIR/small.txt" > /dev/null
 unzip -t single.zip > /dev/null || { echo "❌ Failed: Single file archive invalid"; exit 1; }
 echo "✓ Single file archive valid"
 
 # Test 2: Multiple files
 echo "Test 2: Multiple files..."
-"$BUILD_DIR/burst-writer" -o multi.zip \
+"$BUILD_DIR/burst-writer" -l 0 -o multi.zip \
     "$FIXTURES_DIR/small.txt" \
     "$FIXTURES_DIR/medium.txt" \
     "$FIXTURES_DIR/large.bin" > /dev/null
@@ -49,14 +49,14 @@ cd "$TEST_TMP"
 # Test 4: Empty file handling
 echo "Test 4: Empty file..."
 touch empty.txt
-"$BUILD_DIR/burst-writer" -o empty.zip empty.txt > /dev/null
+"$BUILD_DIR/burst-writer" -l 0 -o empty.zip empty.txt > /dev/null
 unzip -t empty.zip > /dev/null || { echo "❌ Failed: Empty file archive invalid"; exit 1; }
 echo "✓ Empty file handled correctly"
 
 # Test 5: Special characters in filenames
 echo "Test 5: Special characters in filename..."
 echo "content" > "file with spaces.txt"
-"$BUILD_DIR/burst-writer" -o special.zip "file with spaces.txt" > /dev/null
+"$BUILD_DIR/burst-writer" -l 0 -o special.zip "file with spaces.txt" > /dev/null
 unzip -t special.zip > /dev/null || { echo "❌ Failed: Special chars archive invalid"; exit 1; }
 echo "✓ Special characters handled correctly"
 

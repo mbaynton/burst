@@ -28,6 +28,7 @@ add_executable(burst-writer
     src/writer/main.c
     src/writer/burst_writer.c
     src/writer/zip_structures.c
+    src/writer/compression.c
 )
 
 target_include_directories(burst-writer PRIVATE

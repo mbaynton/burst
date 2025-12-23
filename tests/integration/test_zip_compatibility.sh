@@ -17,9 +17,9 @@ cd "$TEST_TMP"
 echo "=== Test: ZIP Compatibility ==="
 echo
 
-# Create test archive
+# Create test archive with STORE method for compatibility with standard tools
 echo "Creating test archive..."
-"$BUILD_DIR/burst-writer" -o compat.zip \
+"$BUILD_DIR/burst-writer" -l 0 -o compat.zip \
     "$FIXTURES_DIR/small.txt" \
     "$FIXTURES_DIR/medium.txt" > /dev/null
 

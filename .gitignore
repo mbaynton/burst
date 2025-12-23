@@ -30,6 +30,7 @@ Makefile
 *.burst
 test_output/
 tests/tmp/
+Testing/Temporary
 
 # OS files
 .DS_Store

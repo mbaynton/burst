@@ -1,5 +1,6 @@
 #include "burst_writer.h"
 #include "zip_structures.h"
+#include "compression.h"
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
@@ -170,8 +171,16 @@ int burst_writer_add_file(struct burst_writer *writer, const char *filename, con
     }
 
     entry->local_header_offset = writer->current_offset + writer->buffer_used;
-    entry->compression_method = ZIP_METHOD_STORE;  // Phase 1: uncompressed
-    entry->version_needed = ZIP_VERSION_STORE;
+
+    // Determine compression method based on compression level
+    // Level 0 = STORE (uncompressed), otherwise use Zstandard
+    if (writer->compression_level == 0 || file_size == 0) {
+        entry->compression_method = ZIP_METHOD_STORE;
+        entry->version_needed = ZIP_VERSION_STORE;
+    } else {
+        entry->compression_method = ZIP_METHOD_ZSTD;
+        entry->version_needed = ZIP_VERSION_ZSTD;
+    }
     entry->general_purpose_flags = ZIP_FLAG_DATA_DESCRIPTOR;
 
     // Get current time for timestamp
@@ -189,25 +198,87 @@ int burst_writer_add_file(struct burst_writer *writer, const char *filename, con
     entry->compressed_start_offset = writer->current_offset + writer->buffer_used;
     entry->uncompressed_start_offset = 0;  // Will be set by alignment logic in Phase 3
 
-    // Phase 1: Store file uncompressed
-    // Read and write file data, computing CRC32
+    // Read and compress file data
     uint32_t crc = 0;
-    uint8_t buffer[8192];
-    size_t bytes_read;
-    uint64_t total_bytes = 0;
+    uint64_t total_uncompressed = 0;
+    uint64_t total_compressed = 0;
 
-    while ((bytes_read = fread(buffer, 1, sizeof(buffer), input)) > 0) {
-        // Compute CRC32
-        crc = crc32(crc, buffer, bytes_read);
+    if (entry->compression_method == ZIP_METHOD_STORE) {
+        // STORE method: copy data uncompressed
+        uint8_t buffer[8192];
+        size_t bytes_read;
 
-        // Write data
-        if (burst_writer_write(writer, buffer, bytes_read) != 0) {
+        while ((bytes_read = fread(buffer, 1, sizeof(buffer), input)) > 0) {
+            crc = crc32(crc, buffer, bytes_read);
+            if (burst_writer_write(writer, buffer, bytes_read) != 0) {
+                free(entry->filename);
+                fclose(input);
+                return -1;
+            }
+            total_uncompressed += bytes_read;
+            total_compressed += bytes_read;
+        }
+    } else {
+        // ZSTD method: compress in 128 KiB chunks
+        #define ZSTD_CHUNK_SIZE (128 * 1024)  // 128 KiB chunks (BTRFS maximum)
+        uint8_t *input_buffer = malloc(ZSTD_CHUNK_SIZE);
+        uint8_t *output_buffer = malloc(ZSTD_compressBound(ZSTD_CHUNK_SIZE));
+
+        if (!input_buffer || !output_buffer) {
+            fprintf(stderr, "Failed to allocate compression buffers\n");
+            free(input_buffer);
+            free(output_buffer);
             free(entry->filename);
             fclose(input);
             return -1;
         }
 
-        total_bytes += bytes_read;
+        size_t bytes_read;
+        while ((bytes_read = fread(input_buffer, 1, ZSTD_CHUNK_SIZE, input)) > 0) {
+            // Compute CRC32 of uncompressed data
+            crc = crc32(crc, input_buffer, bytes_read);
+            total_uncompressed += bytes_read;
+
+            // Compress chunk using new mockable API
+            struct compression_result comp_result = compress_chunk(
+                output_buffer, ZSTD_compressBound(ZSTD_CHUNK_SIZE),
+                input_buffer, bytes_read,
+                writer->compression_level);
+
+            if (comp_result.error) {
+                fprintf(stderr, "Zstandard compression error: %s\n",
+                        comp_result.error_message);
+                free(input_buffer);
+                free(output_buffer);
+                free(entry->filename);
+                fclose(input);
+                return -1;
+            }
+
+            // Verify frame header contains content size
+            if (verify_frame_content_size(output_buffer, comp_result.compressed_size,
+                                           bytes_read) != 0) {
+                free(input_buffer);
+                free(output_buffer);
+                free(entry->filename);
+                fclose(input);
+                return -1;
+            }
+
+            // Write compressed frame
+            if (burst_writer_write(writer, output_buffer, comp_result.compressed_size) != 0) {
+                free(input_buffer);
+                free(output_buffer);
+                free(entry->filename);
+                fclose(input);
+                return -1;
+            }
+
+            total_compressed += comp_result.compressed_size;
+        }
+
+        free(input_buffer);
+        free(output_buffer);
     }
 
     if (ferror(input)) {
@@ -219,9 +290,17 @@ int burst_writer_add_file(struct burst_writer *writer, const char *filename, con
 
     fclose(input);
 
+    // Check if compression was worthwhile
+    if (entry->compression_method == ZIP_METHOD_ZSTD && total_compressed >= total_uncompressed) {
+        // Compressed size is larger - should have used STORE
+        // For Phase 2, we'll just accept this. Phase 3 will add proper fallback logic.
+        printf("Warning: Compressed size (%lu) >= uncompressed (%lu) for %s\n",
+               (unsigned long)total_compressed, (unsigned long)total_uncompressed, filename);
+    }
+
     // Store sizes and CRC
-    entry->compressed_size = total_bytes;
-    entry->uncompressed_size = total_bytes;
+    entry->compressed_size = total_compressed;
+    entry->uncompressed_size = total_uncompressed;
     entry->crc32 = crc;
 
     // Write data descriptor

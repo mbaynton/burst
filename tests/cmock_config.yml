@@ -1,0 +1,18 @@
+:cmock:
+  :mock_prefix: Mock_
+  :when_no_prototypes: :warn
+  :enforce_strict_ordering: false
+  :plugins:
+    - :ignore
+    - :callback
+    - :return_thru_ptr
+  :treat_as:
+    uint8_t: HEX8
+    uint16_t: HEX16
+    uint32_t: HEX32
+    uint64_t: HEX64
+  :includes:
+    - <stddef.h>
+    - <stdint.h>
+  :strippables:
+    - '(?:__attribute__\s*\(+.*?\)+)'

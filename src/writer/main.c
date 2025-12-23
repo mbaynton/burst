@@ -10,9 +10,10 @@ static void print_usage(const char *program_name) {
     printf("\nOptions:\n");
     printf("  -o, --output FILE     Output archive file (required)\n");
     printf("  -l, --level LEVEL     Zstandard compression level (-15 to 22, default: 3)\n");
+    printf("                        Use 0 for uncompressed STORE method\n");
     printf("  -h, --help            Show this help message\n");
-    printf("\nPhase 1: Creates uncompressed ZIP archives for testing.\n");
-    printf("Later phases will add Zstandard compression and 8 MiB alignment.\n");
+    printf("\nPhase 2: Zstandard compression with 128 KiB frames.\n");
+    printf("Later phases will add 8 MiB alignment and ZIP64 support.\n");
 }
 
 int main(int argc, char **argv) {
@@ -71,7 +72,11 @@ int main(int argc, char **argv) {
 
     // Create BURST writer
     printf("Creating BURST archive: %s\n", output_path);
-    printf("Compression level: %d (Phase 1: using STORE method)\n", compression_level);
+    if (compression_level == 0) {
+        printf("Compression level: 0 (using STORE method - uncompressed)\n");
+    } else {
+        printf("Compression level: %d (using Zstandard compression)\n", compression_level);
+    }
     printf("\n");
 
     struct burst_writer *writer = burst_writer_create(output, compression_level);
