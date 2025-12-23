@@ -29,6 +29,7 @@ Makefile
 *.zip
 *.burst
 test_output/
+tests/tmp/
 
 # OS files
 .DS_Store
