@@ -53,9 +53,36 @@ get_magic_hex() {
     dd if="$ARCHIVE" bs=1 skip="$offset" count=4 2>/dev/null | xxd -p | sed 's/\(..\)\(..\)\(..\)\(..\)/\4\3\2\1/'
 }
 
+# Helper function to get skippable frame size (little-endian 4 bytes after magic)
+get_skippable_frame_size() {
+    local offset=$1
+    local size_hex
+    # Skip magic (4 bytes), read size field (4 bytes, little-endian)
+    size_hex=$(dd if="$ARCHIVE" bs=1 skip=$((offset + 4)) count=4 2>/dev/null | xxd -p)
+    # Convert little-endian hex to decimal
+    printf "%d" "0x${size_hex:6:2}${size_hex:4:2}${size_hex:2:2}${size_hex:0:2}"
+}
+
+# Helper function to identify skippable frame type
+identify_skippable_frame() {
+    local offset=$1
+    local frame_size
+    frame_size=$(get_skippable_frame_size "$offset")
+
+    # Start-of-Part metadata frame has exactly 16-byte payload (24 bytes total with header)
+    if [ "$frame_size" -eq 16 ]; then
+        echo "Start-of-Part metadata frame -- GOOD"
+        return 0
+    else
+        echo "Padding frame (${frame_size} bytes payload)"
+        return 1
+    fi
+}
+
 # Helper function to identify magic number
 identify_magic() {
     local magic=$1
+    local offset=$2  # Need offset to inspect frame details
     case "$magic" in
         "504b0304")
             echo "ZIP local file header -- GOOD"
@@ -78,8 +105,9 @@ identify_magic() {
             return 0
             ;;
         "184d2a5b"|"5b2a4d18")
-            echo "Zstandard skippable frame (BURST padding/metadata) -- GOOD"
-            return 0
+            # Check if it's Start-of-Part or padding
+            identify_skippable_frame "$offset"
+            return $?
             ;;
         *)
             echo "UNKNOWN"
@@ -109,7 +137,7 @@ for ((i=1; i<=NUM_BOUNDARIES; i++)); do
     # Get magic number at boundary
     MAGIC=$(get_magic_hex "$OFFSET")
     set +e
-    IDENTIFIED=$(identify_magic "$MAGIC")
+    IDENTIFIED=$(identify_magic "$MAGIC" "$OFFSET")
     set -e
     RESULT=1
     if [[ "${IDENTIFIED}" =~ "GOOD" ]]; then
