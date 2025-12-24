@@ -173,18 +173,11 @@ int burst_writer_add_file(struct burst_writer *writer, const char *filename, con
 
     entry->local_header_offset = writer->current_offset + writer->buffer_used;
 
-    // Phase 3: Use Zstandard compression (required for alignment)
-    // Exception: Empty files use STORE method (nothing to compress)
-    // STORE method is otherwise incompatible with Zstandard skippable frames used for alignment
-    if (file_size == 0) {
-        entry->compression_method = ZIP_METHOD_STORE;
-        entry->version_needed = ZIP_VERSION_STORE;
-        entry->general_purpose_flags = ZIP_FLAG_DATA_DESCRIPTOR;
-    } else {
-        entry->compression_method = ZIP_METHOD_ZSTD;
-        entry->version_needed = ZIP_VERSION_ZSTD;
-        entry->general_purpose_flags = ZIP_FLAG_DATA_DESCRIPTOR;
-    }
+    // Phase 3: Always use Zstandard compression (required for alignment)
+    // Empty files use Zstandard with skippable frames for alignment padding
+    entry->compression_method = ZIP_METHOD_ZSTD;
+    entry->version_needed = ZIP_VERSION_ZSTD;
+    entry->general_purpose_flags = ZIP_FLAG_DATA_DESCRIPTOR;
 
     // Get current time for timestamp
     time_t now = time(NULL);
@@ -221,6 +214,26 @@ int burst_writer_add_file(struct burst_writer *writer, const char *filename, con
 
     size_t bytes_read;
     bool needs_descriptor_alignment = false;
+
+    // Handle empty files: write a valid empty Zstandard frame
+    // This is required for 7-Zip compatibility with Zstandard method
+    if (file_size == 0) {
+        // Valid empty Zstandard frame: 13 bytes
+        // Magic (4) + frame header (5) + checksum (4)
+        const uint8_t empty_zstd_frame[] = {
+            0x28, 0xB5, 0x2F, 0xFD,  // Magic number
+            0x24, 0x00, 0x01, 0x00, 0x00,  // Frame header (FCS=0, single segment, no checksum flag but checksum present)
+            0x99, 0xE9, 0xD8, 0x51   // XXH64 checksum of empty data
+        };
+
+        if (burst_writer_write(writer, empty_zstd_frame, sizeof(empty_zstd_frame)) != 0) {
+            free(input_buffer);
+            free(output_buffer);
+            free(entry->filename);
+            fclose(input);
+            return -1;
+        }
+    }
 
     while ((bytes_read = fread(input_buffer, 1, ZSTD_CHUNK_SIZE, input)) > 0) {
         // Compute CRC32 of uncompressed data
@@ -317,8 +330,28 @@ int burst_writer_add_file(struct burst_writer *writer, const char *filename, con
     free(input_buffer);
     free(output_buffer);
 
-    // Phase 3: Handle data descriptor alignment if needed
-    if (needs_descriptor_alignment) {
+    // Phase 3: Handle data descriptor alignment for both empty and non-empty files
+    bool needs_alignment_for_descriptor = false;
+
+    if (total_uncompressed == 0) {
+        // Empty file - check if 16-byte descriptor needs alignment
+        // Empty files skip the compression loop, so we check here
+        uint64_t write_pos = alignment_get_write_position(writer);
+        uint64_t next_boundary = alignment_next_boundary(write_pos);
+        uint64_t space_until_boundary = next_boundary - write_pos;
+        const size_t descriptor_size = 16;  // sizeof(struct zip_data_descriptor)
+
+        // Need padding if descriptor + min skippable frame won't fit
+        if (space_until_boundary < descriptor_size + BURST_MIN_SKIPPABLE_FRAME_SIZE) {
+            needs_alignment_for_descriptor = true;
+        }
+    } else if (needs_descriptor_alignment) {
+        // Non-empty file with descriptor_after_boundary flag set in compression loop
+        needs_alignment_for_descriptor = true;
+    }
+
+    // Write alignment padding if needed
+    if (needs_alignment_for_descriptor) {
         uint64_t write_pos = alignment_get_write_position(writer);
         uint64_t space_until_boundary = alignment_next_boundary(write_pos) - write_pos;
 
@@ -331,7 +364,8 @@ int burst_writer_add_file(struct burst_writer *writer, const char *filename, con
         }
         writer->padding_bytes += padding_size + 8;
 
-        // Write Start-of-Part frame (marks boundary where descriptor starts)
+        // Write Start-of-Part frame at boundary
+        // For empty files, uncompressed_offset is 0
         if (alignment_write_start_of_part_frame(writer, total_uncompressed) != 0) {
             free(entry->filename);
             fclose(input);
