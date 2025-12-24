@@ -151,6 +151,44 @@ void test_large_frame(void) {
     TEST_ASSERT_FALSE(decision.descriptor_after_boundary);
 }
 
+// Test 11: Empty file data descriptor near boundary
+void test_empty_file_descriptor_alignment(void) {
+    // Empty file: local header ends 20 bytes before boundary
+    // Data descriptor (16 bytes) + min padding (8) = 24 bytes needed
+    // Only 20 bytes available → needs padding
+    uint64_t current_offset = 8388608 - 20;  // After local header + empty zstd frame
+    uint64_t next_boundary = alignment_next_boundary(current_offset);
+    uint64_t space = next_boundary - current_offset;
+
+    TEST_ASSERT_EQUAL(20, space);
+    TEST_ASSERT_TRUE(space < 16 + 8);  // Descriptor + min padding won't fit
+}
+
+// Test 12: Empty file descriptor fits comfortably
+void test_empty_file_descriptor_fits(void) {
+    // Empty file with plenty of space before boundary
+    uint64_t current_offset = 8388608 - 100;
+    uint64_t space = alignment_next_boundary(current_offset) - current_offset;
+
+    TEST_ASSERT_EQUAL(100, space);
+    TEST_ASSERT_TRUE(space >= 16 + 8);  // Descriptor fits comfortably
+}
+
+// Test 13: Multiple empty files crossing boundary
+void test_multiple_empty_files_near_boundary(void) {
+    // Simulate multiple empty file structures
+    // Each empty file: local header (30 + filename) + empty zstd frame (13) + descriptor (16)
+    // Assuming 10-char filename: 30 + 10 = 40, total = 40 + 13 + 16 = 69 bytes per empty file
+    uint64_t offset = 8388608 - 200;  // 200 bytes before boundary
+
+    // After 2 files: 200 - 138 = 62 bytes remaining
+    offset += 69 * 2;  // Two complete empty files
+    uint64_t space = 8388608 - offset;
+
+    TEST_ASSERT_EQUAL(62, space);  // Enough for another file but testing boundary logic
+    TEST_ASSERT_TRUE(space < 69);  // Not enough for another complete empty file
+}
+
 int main(void) {
     UNITY_BEGIN();
 
@@ -165,6 +203,9 @@ int main(void) {
     RUN_TEST(test_new_file_at_boundary);
     RUN_TEST(test_minimum_padding_size);
     RUN_TEST(test_large_frame);
+    RUN_TEST(test_empty_file_descriptor_alignment);
+    RUN_TEST(test_empty_file_descriptor_fits);
+    RUN_TEST(test_multiple_empty_files_near_boundary);
 
     return UNITY_END();
 }

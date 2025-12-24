@@ -122,31 +122,26 @@ int burst_writer_flush(struct burst_writer *writer) {
     return 0;
 }
 
-int burst_writer_add_file(struct burst_writer *writer, const char *filename, const char *input_path) {
-    if (!writer || !filename || !input_path) {
-        return -1;
-    }
-
-    // Open input file
-    FILE *input = fopen(input_path, "rb");
-    if (!input) {
-        fprintf(stderr, "Failed to open input file '%s': %s\n", input_path, strerror(errno));
+int burst_writer_add_file(struct burst_writer *writer,
+                          FILE *input_file,
+                          struct zip_local_header *lfh,
+                          int lfh_len,
+                          int next_lfh_len) {
+    if (!writer || !input_file || !lfh || lfh_len <= 0) {
         return -1;
     }
 
     // Get file size
-    if (fseek(input, 0, SEEK_END) != 0) {
+    if (fseek(input_file, 0, SEEK_END) != 0) {
         fprintf(stderr, "Failed to seek input file: %s\n", strerror(errno));
-        fclose(input);
         return -1;
     }
-    long file_size = ftell(input);
+    long file_size = ftell(input_file);
     if (file_size < 0) {
         fprintf(stderr, "Failed to get file size: %s\n", strerror(errno));
-        fclose(input);
         return -1;
     }
-    rewind(input);
+    rewind(input_file);
 
     // Expand file tracking array if needed
     if (writer->num_files >= writer->files_capacity) {
@@ -154,7 +149,6 @@ int burst_writer_add_file(struct burst_writer *writer, const char *filename, con
         struct file_entry *new_files = realloc(writer->files, new_capacity * sizeof(struct file_entry));
         if (!new_files) {
             fprintf(stderr, "Failed to expand file tracking array\n");
-            fclose(input);
             return -1;
         }
         writer->files = new_files;
@@ -165,36 +159,25 @@ int burst_writer_add_file(struct burst_writer *writer, const char *filename, con
     struct file_entry *entry = &writer->files[writer->num_files];
     memset(entry, 0, sizeof(struct file_entry));
 
-    entry->filename = strdup(filename);
+    // Extract filename from local file header for central directory entry
+    const char *filename = (const char *)((uint8_t *)lfh + sizeof(struct zip_local_header));
+    entry->filename = strndup(filename, lfh->filename_length);
     if (!entry->filename) {
-        fclose(input);
         return -1;
     }
 
     entry->local_header_offset = writer->current_offset + writer->buffer_used;
 
-    // Phase 3: Use Zstandard compression (required for alignment)
-    // Exception: Empty files use STORE method (nothing to compress)
-    // STORE method is otherwise incompatible with Zstandard skippable frames used for alignment
-    if (file_size == 0) {
-        entry->compression_method = ZIP_METHOD_STORE;
-        entry->version_needed = ZIP_VERSION_STORE;
-        entry->general_purpose_flags = ZIP_FLAG_DATA_DESCRIPTOR;
-    } else {
-        entry->compression_method = ZIP_METHOD_ZSTD;
-        entry->version_needed = ZIP_VERSION_ZSTD;
-        entry->general_purpose_flags = ZIP_FLAG_DATA_DESCRIPTOR;
-    }
+    // Copy header fields from caller-provided local file header
+    entry->compression_method = lfh->compression_method;
+    entry->version_needed = lfh->version_needed;
+    entry->general_purpose_flags = lfh->flags;
+    entry->last_mod_time = lfh->last_mod_time;
+    entry->last_mod_date = lfh->last_mod_date;
 
-    // Get current time for timestamp
-    time_t now = time(NULL);
-    dos_datetime_from_time_t(now, &entry->last_mod_time, &entry->last_mod_date);
-
-    // Write local file header
-    if (write_local_header(writer, filename, entry->compression_method, entry->general_purpose_flags,
-                          entry->last_mod_time, entry->last_mod_date) != 0) {
+    // Write the pre-constructed local file header directly
+    if (burst_writer_write(writer, lfh, lfh_len) != 0) {
         free(entry->filename);
-        fclose(input);
         return -1;
     }
 
@@ -215,19 +198,37 @@ int burst_writer_add_file(struct burst_writer *writer, const char *filename, con
         free(input_buffer);
         free(output_buffer);
         free(entry->filename);
-        fclose(input);
         return -1;
     }
 
     size_t bytes_read;
     bool needs_descriptor_alignment = false;
 
-    while ((bytes_read = fread(input_buffer, 1, ZSTD_CHUNK_SIZE, input)) > 0) {
+    // Handle empty files: write a valid empty Zstandard frame
+    // This is required for 7-Zip compatibility with Zstandard method
+    if (file_size == 0) {
+        // Valid empty Zstandard frame: 13 bytes
+        // Magic (4) + frame header (5) + checksum (4)
+        const uint8_t empty_zstd_frame[] = {
+            0x28, 0xB5, 0x2F, 0xFD,  // Magic number
+            0x24, 0x00, 0x01, 0x00, 0x00,  // Frame header (FCS=0, single segment, no checksum flag but checksum present)
+            0x99, 0xE9, 0xD8, 0x51   // XXH64 checksum of empty data
+        };
+
+        if (burst_writer_write(writer, empty_zstd_frame, sizeof(empty_zstd_frame)) != 0) {
+            free(input_buffer);
+            free(output_buffer);
+            free(entry->filename);
+            return -1;
+        }
+    }
+
+    while ((bytes_read = fread(input_buffer, 1, ZSTD_CHUNK_SIZE, input_file)) > 0) {
         // Compute CRC32 of uncompressed data
         crc = crc32(crc, input_buffer, bytes_read);
         total_uncompressed += bytes_read;
 
-        // Compress chunk using new mockable API
+        // Compress chunk using mockable API
         struct compression_result comp_result = compress_chunk(
             output_buffer, ZSTD_compressBound(ZSTD_CHUNK_SIZE),
             input_buffer, bytes_read,
@@ -239,7 +240,6 @@ int burst_writer_add_file(struct burst_writer *writer, const char *filename, con
             free(input_buffer);
             free(output_buffer);
             free(entry->filename);
-            fclose(input);
             return -1;
         }
 
@@ -250,14 +250,13 @@ int burst_writer_add_file(struct burst_writer *writer, const char *filename, con
             free(input_buffer);
             free(output_buffer);
             free(entry->filename);
-            fclose(input);
             return -1;
         }
 #endif
 
         // Phase 3: Check alignment before writing frame
         uint64_t write_pos = alignment_get_write_position(writer);
-        bool at_eof = (bytes_read < ZSTD_CHUNK_SIZE) || feof(input);
+        bool at_eof = (bytes_read < ZSTD_CHUNK_SIZE) || feof(input_file);
 
         struct alignment_decision decision = alignment_decide(
             write_pos,
@@ -273,7 +272,6 @@ int burst_writer_add_file(struct burst_writer *writer, const char *filename, con
                 free(input_buffer);
                 free(output_buffer);
                 free(entry->filename);
-                fclose(input);
                 return -1;
             }
             writer->padding_bytes += decision.padding_size + 8;
@@ -283,7 +281,6 @@ int burst_writer_add_file(struct burst_writer *writer, const char *filename, con
                 free(input_buffer);
                 free(output_buffer);
                 free(entry->filename);
-                fclose(input);
                 return -1;
             }
             writer->padding_bytes += decision.padding_size + 8;
@@ -293,7 +290,6 @@ int burst_writer_add_file(struct burst_writer *writer, const char *filename, con
                 free(input_buffer);
                 free(output_buffer);
                 free(entry->filename);
-                fclose(input);
                 return -1;
             }
             writer->padding_bytes += 24;
@@ -309,7 +305,6 @@ int burst_writer_add_file(struct burst_writer *writer, const char *filename, con
             free(input_buffer);
             free(output_buffer);
             free(entry->filename);
-            fclose(input);
             return -1;
         }
     }
@@ -317,8 +312,28 @@ int burst_writer_add_file(struct burst_writer *writer, const char *filename, con
     free(input_buffer);
     free(output_buffer);
 
-    // Phase 3: Handle data descriptor alignment if needed
-    if (needs_descriptor_alignment) {
+    // Phase 3: Handle data descriptor alignment for both empty and non-empty files
+    bool needs_alignment_for_descriptor = false;
+
+    if (total_uncompressed == 0) {
+        // Empty file - check if 16-byte descriptor needs alignment
+        // Empty files skip the compression loop, so we check here
+        uint64_t write_pos = alignment_get_write_position(writer);
+        uint64_t next_boundary = alignment_next_boundary(write_pos);
+        uint64_t space_until_boundary = next_boundary - write_pos;
+        const size_t descriptor_size = 16;  // sizeof(struct zip_data_descriptor)
+
+        // Need padding if descriptor + min skippable frame won't fit
+        if (space_until_boundary < descriptor_size + BURST_MIN_SKIPPABLE_FRAME_SIZE) {
+            needs_alignment_for_descriptor = true;
+        }
+    } else if (needs_descriptor_alignment) {
+        // Non-empty file with descriptor_after_boundary flag set in compression loop
+        needs_alignment_for_descriptor = true;
+    }
+
+    // Write alignment padding if needed
+    if (needs_alignment_for_descriptor) {
         uint64_t write_pos = alignment_get_write_position(writer);
         uint64_t space_until_boundary = alignment_next_boundary(write_pos) - write_pos;
 
@@ -326,28 +341,24 @@ int burst_writer_add_file(struct burst_writer *writer, const char *filename, con
         size_t padding_size = (size_t)(space_until_boundary - 8);
         if (alignment_write_padding_frame(writer, padding_size) != 0) {
             free(entry->filename);
-            fclose(input);
             return -1;
         }
         writer->padding_bytes += padding_size + 8;
 
-        // Write Start-of-Part frame (marks boundary where descriptor starts)
+        // Write Start-of-Part frame at boundary
+        // For empty files, uncompressed_offset is 0
         if (alignment_write_start_of_part_frame(writer, total_uncompressed) != 0) {
             free(entry->filename);
-            fclose(input);
             return -1;
         }
         writer->padding_bytes += 24;
     }
 
-    if (ferror(input)) {
+    if (ferror(input_file)) {
         fprintf(stderr, "Error reading input file: %s\n", strerror(errno));
         free(entry->filename);
-        fclose(input);
         return -1;
     }
-
-    fclose(input);
 
     // Calculate actual compressed size (includes padding and metadata frames)
     // This is the total bytes written between local header and data descriptor
@@ -365,6 +376,41 @@ int burst_writer_add_file(struct burst_writer *writer, const char *filename, con
     entry->compressed_size = total_compressed;
     entry->uncompressed_size = total_uncompressed;
     entry->crc32 = crc;
+
+    // Phase 3: Check if next file's local header would fit before boundary
+    // We must check BEFORE writing the data descriptor, because we cannot
+    // insert Zstandard skippable frames between the descriptor and next local header
+    // (that space is outside any ZIP file entry).
+    if (next_lfh_len > 0) {  // Skip check if this is the last file
+        uint64_t write_pos = alignment_get_write_position(writer);
+        uint64_t next_boundary = alignment_next_boundary(write_pos);
+        uint64_t space_until_boundary = next_boundary - write_pos;
+
+        // Space needed: data descriptor (16 bytes) + next local header (actual size)
+        const size_t descriptor_size = 16;  // sizeof(struct zip_data_descriptor)
+        size_t space_needed = descriptor_size + next_lfh_len;
+
+        // If insufficient space, pad current file to boundary so descriptor + next header
+        // will be at/after boundary
+        if (space_until_boundary < space_needed + BURST_MIN_SKIPPABLE_FRAME_SIZE) {
+            // Not enough space - pad to boundary within current file's compressed data
+            size_t padding_size = (size_t)(space_until_boundary - 8);  // Exclude frame header
+
+            if (alignment_write_padding_frame(writer, padding_size) != 0) {
+                free(entry->filename);
+                return -1;
+            }
+            writer->padding_bytes += padding_size + 8;
+
+            // Write Start-of-Part frame at boundary indicating where data descriptor
+            // and next file will begin. Use current file's final uncompressed offset.
+            if (alignment_write_start_of_part_frame(writer, total_uncompressed) != 0) {
+                free(entry->filename);
+                return -1;
+            }
+            writer->padding_bytes += 24;  // Start-of-Part frame size
+        }
+    }
 
     // Write data descriptor (now properly aligned)
     if (write_data_descriptor(writer, entry->crc32, entry->compressed_size, entry->uncompressed_size) != 0) {
