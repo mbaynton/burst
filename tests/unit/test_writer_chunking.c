@@ -4,12 +4,34 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <stdint.h>
+
+// Define ZIP structures needed for testing
+#define ZIP_LOCAL_FILE_HEADER_SIG 0x04034b50
+#define ZIP_VERSION_ZSTD 63
+#define ZIP_FLAG_DATA_DESCRIPTOR 0x0008
+#define ZIP_METHOD_ZSTD 93
+
+struct zip_local_header {
+    uint32_t signature;
+    uint16_t version_needed;
+    uint16_t flags;
+    uint16_t compression_method;
+    uint16_t last_mod_time;
+    uint16_t last_mod_date;
+    uint32_t crc32;
+    uint32_t compressed_size;
+    uint32_t uncompressed_size;
+    uint16_t filename_length;
+    uint16_t extra_field_length;
+} __attribute__((packed));
 
 // Forward declare burst_writer functions
 struct burst_writer;
 struct burst_writer* burst_writer_create(FILE* output, int compression_level);
 void burst_writer_destroy(struct burst_writer* writer);
-int burst_writer_add_file(struct burst_writer* writer, const char* filename, const char* input_path);
+int burst_writer_add_file(struct burst_writer* writer, FILE* input_file,
+                          struct zip_local_header* lfh, int lfh_len, int next_lfh_len);
 
 // Global call counters
 static int compress_chunk_call_count;
@@ -56,6 +78,33 @@ void tearDown(void) {
     Mock_compression_mock_Destroy();
 }
 
+// Helper to build a local file header for testing
+static struct zip_local_header* build_test_header(const char *filename, int *lfh_len_out) {
+    size_t filename_len = strlen(filename);
+    size_t total_size = sizeof(struct zip_local_header) + filename_len;
+
+    struct zip_local_header *lfh = malloc(total_size);
+    if (!lfh) return NULL;
+
+    memset(lfh, 0, sizeof(struct zip_local_header));
+    lfh->signature = ZIP_LOCAL_FILE_HEADER_SIG;
+    lfh->version_needed = ZIP_VERSION_ZSTD;
+    lfh->flags = ZIP_FLAG_DATA_DESCRIPTOR;
+    lfh->compression_method = ZIP_METHOD_ZSTD;
+    lfh->last_mod_time = 0;
+    lfh->last_mod_date = (1 << 5) | 1;  // 1980-01-01
+    lfh->crc32 = 0;
+    lfh->compressed_size = 0;
+    lfh->uncompressed_size = 0;
+    lfh->filename_length = filename_len;
+    lfh->extra_field_length = 0;
+
+    memcpy((uint8_t*)lfh + sizeof(struct zip_local_header), filename, filename_len);
+
+    *lfh_len_out = total_size;
+    return lfh;
+}
+
 // Helper to create temp file of specific size
 static char* create_temp_file(const char* name, size_t size) {
     static char path[256];
@@ -82,12 +131,25 @@ void test_file_exactly_128k_produces_one_chunk(void) {
     FILE* output = tmpfile();
     struct burst_writer* writer = burst_writer_create(output, 3);
 
-    int result = burst_writer_add_file(writer, "test.dat", test_file);
+    // Build header
+    int lfh_len = 0;
+    struct zip_local_header *lfh = build_test_header("test.dat", &lfh_len);
+    TEST_ASSERT_NOT_NULL(lfh);
+
+    // Open file handle
+    FILE *input = fopen(test_file, "rb");
+    TEST_ASSERT_NOT_NULL(input);
+
+    // Call with new API (next_lfh_len = 0 for single file tests)
+    int result = burst_writer_add_file(writer, input, lfh, lfh_len, 0);
 
     TEST_ASSERT_EQUAL(0, result);
     TEST_ASSERT_EQUAL(1, compress_chunk_call_count);
     TEST_ASSERT_EQUAL(1, verify_frame_content_size_call_count);
 
+    // Cleanup
+    fclose(input);
+    free(lfh);
     burst_writer_destroy(writer);
     fclose(output);
     unlink(test_file);
@@ -102,12 +164,25 @@ void test_file_128k_plus_one_produces_two_chunks(void) {
     FILE* output = tmpfile();
     struct burst_writer* writer = burst_writer_create(output, 3);
 
-    int result = burst_writer_add_file(writer, "test.dat", test_file);
+    // Build header
+    int lfh_len = 0;
+    struct zip_local_header *lfh = build_test_header("test.dat", &lfh_len);
+    TEST_ASSERT_NOT_NULL(lfh);
+
+    // Open file handle
+    FILE *input = fopen(test_file, "rb");
+    TEST_ASSERT_NOT_NULL(input);
+
+    // Call with new API (next_lfh_len = 0 for single file tests)
+    int result = burst_writer_add_file(writer, input, lfh, lfh_len, 0);
 
     TEST_ASSERT_EQUAL(0, result);
     TEST_ASSERT_EQUAL(2, compress_chunk_call_count);
     TEST_ASSERT_EQUAL(2, verify_frame_content_size_call_count);
 
+    // Cleanup
+    fclose(input);
+    free(lfh);
     burst_writer_destroy(writer);
     fclose(output);
     unlink(test_file);
@@ -122,11 +197,24 @@ void test_file_256k_produces_two_chunks(void) {
     FILE* output = tmpfile();
     struct burst_writer* writer = burst_writer_create(output, 3);
 
-    int result = burst_writer_add_file(writer, "test.dat", test_file);
+    // Build header
+    int lfh_len = 0;
+    struct zip_local_header *lfh = build_test_header("test.dat", &lfh_len);
+    TEST_ASSERT_NOT_NULL(lfh);
+
+    // Open file handle
+    FILE *input = fopen(test_file, "rb");
+    TEST_ASSERT_NOT_NULL(input);
+
+    // Call with new API (next_lfh_len = 0 for single file tests)
+    int result = burst_writer_add_file(writer, input, lfh, lfh_len, 0);
 
     TEST_ASSERT_EQUAL(0, result);
     TEST_ASSERT_EQUAL(2, compress_chunk_call_count);
 
+    // Cleanup
+    fclose(input);
+    free(lfh);
     burst_writer_destroy(writer);
     fclose(output);
     unlink(test_file);
@@ -141,11 +229,24 @@ void test_file_384k_minus_one_produces_three_chunks(void) {
     FILE* output = tmpfile();
     struct burst_writer* writer = burst_writer_create(output, 3);
 
-    int result = burst_writer_add_file(writer, "test.dat", test_file);
+    // Build header
+    int lfh_len = 0;
+    struct zip_local_header *lfh = build_test_header("test.dat", &lfh_len);
+    TEST_ASSERT_NOT_NULL(lfh);
+
+    // Open file handle
+    FILE *input = fopen(test_file, "rb");
+    TEST_ASSERT_NOT_NULL(input);
+
+    // Call with new API (next_lfh_len = 0 for single file tests)
+    int result = burst_writer_add_file(writer, input, lfh, lfh_len, 0);
 
     TEST_ASSERT_EQUAL(0, result);
     TEST_ASSERT_EQUAL(3, compress_chunk_call_count);
 
+    // Cleanup
+    fclose(input);
+    free(lfh);
     burst_writer_destroy(writer);
     fclose(output);
     unlink(test_file);
@@ -160,12 +261,25 @@ void test_chunks_never_exceed_128k(void) {
     FILE* output = tmpfile();
     struct burst_writer* writer = burst_writer_create(output, 3);
 
-    int result = burst_writer_add_file(writer, "test.dat", test_file);
+    // Build header
+    int lfh_len = 0;
+    struct zip_local_header *lfh = build_test_header("test.dat", &lfh_len);
+    TEST_ASSERT_NOT_NULL(lfh);
+
+    // Open file handle
+    FILE *input = fopen(test_file, "rb");
+    TEST_ASSERT_NOT_NULL(input);
+
+    // Call with new API (next_lfh_len = 0 for single file tests)
+    int result = burst_writer_add_file(writer, input, lfh, lfh_len, 0);
 
     TEST_ASSERT_EQUAL(0, result);
     // 200 KiB = 128 KiB + 72 KiB → 2 chunks
     TEST_ASSERT_EQUAL(2, compress_chunk_call_count);
 
+    // Cleanup
+    fclose(input);
+    free(lfh);
     burst_writer_destroy(writer);
     fclose(output);
     unlink(test_file);
