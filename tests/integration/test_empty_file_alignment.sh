@@ -52,7 +52,7 @@ echo "✓ 300 empty files archive valid"
 
 # Verify alignment using verification script
 echo "Test 3: Verify 8 MiB boundary alignment..."
-bash "$PROJECT_ROOT/tests/integration/verify_alignment.sh" test2.zip || {
+python3 "$PROJECT_ROOT/tests/integration/verify_alignment.py" test2.zip || {
     echo "❌ Failed: Alignment violation detected"
     exit 1
 }

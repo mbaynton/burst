@@ -146,7 +146,10 @@ bash tests/integration/test_alignment_integration.sh
 #### Validation Tools
 ```bash
 # Verify 8 MiB boundary alignment in any archive
-bash tests/integration/verify_alignment.sh <archive.zip>
+python3 tests/integration/verify_alignment.py <archive.zip>
+
+# With verbose output (hex dumps at boundaries)
+python3 tests/integration/verify_alignment.py -v <archive.zip>
 ```
 
 ### Test Coverage
@@ -240,7 +243,8 @@ burst/
 │   │   ├── test_zip_compatibility.sh
 │   │   ├── test_zstd_compression.sh
 │   │   ├── test_alignment_integration.sh
-│   │   └── verify_alignment.sh
+│   │   ├── test_empty_file_alignment.sh
+│   │   └── verify_alignment.py
 │   └── fixtures/           # Test data files
 └── tmp/                    # Local testing (gitignored)
 ```

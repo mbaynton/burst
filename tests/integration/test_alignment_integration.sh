@@ -1,6 +1,10 @@
 #!/bin/bash
 # Test Phase 3: 8 MiB Alignment Implementation
 # Verifies that all 8 MiB boundaries align to ZIP headers or Zstandard frame starts
+#
+# Usage:
+#   bash test_alignment_integration.sh          # Normal output
+#   VERBOSE=1 bash test_alignment_integration.sh # Verbose output with hex dumps
 
 set -e  # Exit on error
 
@@ -37,20 +41,17 @@ create_test_file() {
     fi
 }
 
-# Helper: Check if offset is at 8 MiB boundary
-is_at_boundary() {
-    local offset=$1
-    local boundary=$((8 * 1024 * 1024))
-    local remainder=$((offset % boundary))
-    [ $remainder -eq 0 ]
-}
+# Helper: Verify alignment using Python script
+verify_alignment() {
+    local archive="$1"
+    local verbose_flag=""
 
-# Helper: Get magic number at specific offset (4 bytes as hex string)
-get_magic_at_offset() {
-    local file="$1"
-    local offset="$2"
-    # Return raw hex bytes without endian conversion
-    dd if="$file" bs=1 skip="$offset" count=4 2>/dev/null | xxd -p
+    # Use verbose mode if VERBOSE environment variable is set
+    if [ -n "$VERBOSE" ]; then
+        verbose_flag="-v"
+    fi
+
+    python3 "$PROJECT_ROOT/tests/integration/verify_alignment.py" $verbose_flag "$archive"
 }
 
 # Test 1: Single large file (10 MiB) - should cross at least one boundary
@@ -61,20 +62,11 @@ create_test_file "input_10mb.bin" $((10 * 1024 * 1024))
 # Verify archive is valid
 run_7z t test1.zip 2>&1 | grep -q "Everything is Ok" || { echo "❌ Failed: Archive invalid"; exit 1; }
 
-# Check that archive crosses at least one 8 MiB boundary
-archive_size=$(stat -c%s test1.zip)
-if [ "$archive_size" -lt $((8 * 1024 * 1024)) ]; then
-    echo "❌ Failed: Archive too small to test boundary crossing"
+# Verify alignment with Python script
+verify_alignment test1.zip || {
+    echo "❌ Failed: Alignment verification failed"
     exit 1
-fi
-
-# Check first boundary (8 MiB)
-magic=$(get_magic_at_offset test1.zip $((8 * 1024 * 1024)))
-case "$magic" in
-    "504b0304") echo "  ✓ 8 MiB boundary: ZIP local header" ;;
-    "5b2a4d18") echo "  ✓ 8 MiB boundary: Skippable frame (Start-of-Part)" ;;
-    *) echo "❌ Failed: Invalid magic at 8 MiB boundary: $magic"; exit 1 ;;
-esac
+}
 
 # Extract and verify
 mkdir -p extract1
@@ -135,21 +127,11 @@ create_test_file "slightly_over_8mb.bin" $((8 * 1024 * 1024 + 150 * 1024))
 # Verify archive is valid
 run_7z t test4.zip 2>&1 | grep -q "Everything is Ok" || { echo "❌ Failed: Archive invalid"; exit 1; }
 
-# This case should trigger the descriptor_after_boundary flag
-# We expect to see padding + Start-of-Part frame around the boundary
-archive_size=$(stat -c%s test4.zip)
-if [ "$archive_size" -lt $((8 * 1024 * 1024)) ]; then
-    echo "❌ Failed: Archive too small"
+# Verify alignment with Python script
+verify_alignment test4.zip || {
+    echo "❌ Failed: Alignment verification failed"
     exit 1
-fi
-
-# Check 8 MiB boundary - should have skippable frame or data descriptor
-magic=$(get_magic_at_offset test4.zip $((8 * 1024 * 1024)))
-case "$magic" in
-    "08074b50") echo "  ✓ 8 MiB boundary: Data descriptor (edge case handled correctly)" ;;
-    "5b2a4d18") echo "  ✓ 8 MiB boundary: Skippable frame (Start-of-Part before descriptor)" ;;
-    *) echo "⚠ Warning: Unexpected magic at 8 MiB boundary: $magic (may be valid)" ;;
-esac
+}
 
 # Extract and verify
 mkdir -p extract4
@@ -168,20 +150,11 @@ create_test_file "large_20mb.bin" $((20 * 1024 * 1024))
 # Verify archive is valid
 run_7z t test5.zip 2>&1 | grep -q "Everything is Ok" || { echo "❌ Failed: Archive invalid"; exit 1; }
 
-# Check all boundaries that should exist (8 MiB and 16 MiB)
-for boundary_mb in 8 16; do
-    boundary_offset=$((boundary_mb * 1024 * 1024))
-    magic=$(get_magic_at_offset test5.zip "$boundary_offset")
-    case "$magic" in
-        "504b0304"|"5b2a4d18")
-            echo "  ✓ ${boundary_mb} MiB boundary aligned correctly (magic: $magic)"
-            ;;
-        *)
-            echo "❌ Failed: Invalid magic at ${boundary_mb} MiB boundary: $magic"
-            exit 1
-            ;;
-    esac
-done
+# Verify alignment with Python script
+verify_alignment test5.zip || {
+    echo "❌ Failed: Alignment verification failed"
+    exit 1
+}
 
 # Extract and verify
 mkdir -p extract5
