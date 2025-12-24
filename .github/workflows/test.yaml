@@ -39,5 +39,5 @@ jobs:
     - name: Run integration tests
       run: |
         cd tests/integration
-        bash test_writer_basic.sh
-        bash test_zip_compatibility.sh
+        set -e
+        for i in $(ls *.sh); do bash $i; done
