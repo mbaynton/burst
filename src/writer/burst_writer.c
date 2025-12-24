@@ -21,7 +21,6 @@ struct burst_writer* burst_writer_create(FILE *output, int compression_level) {
 
     writer->output = output;
     writer->current_offset = 0;
-    writer->current_part = 0;
     writer->compression_level = compression_level;
 
     // Allocate file tracking array
@@ -472,5 +471,4 @@ void burst_writer_print_stats(const struct burst_writer *writer) {
     }
     printf("  Padding bytes: %lu\n", (unsigned long)writer->padding_bytes);
     printf("  Final size: %lu bytes\n", (unsigned long)writer->current_offset);
-    printf("  Number of 8 MiB parts: %u\n", writer->current_part + 1);
 }

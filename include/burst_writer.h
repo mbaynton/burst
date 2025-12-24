@@ -32,7 +32,6 @@ struct file_entry {
 struct burst_writer {
     FILE *output;
     uint64_t current_offset;
-    uint32_t current_part;
     ZSTD_CCtx *zstd_ctx;
     int compression_level;
 
