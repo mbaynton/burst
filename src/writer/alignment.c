@@ -19,8 +19,7 @@ uint64_t alignment_get_write_position(struct burst_writer *writer) {
 struct alignment_decision alignment_decide(
     uint64_t current_offset,
     size_t frame_size,
-    bool at_file_end,
-    bool is_new_file)
+    bool at_file_end)
 {
     struct alignment_decision decision = {0};
     decision.next_boundary = alignment_next_boundary(current_offset);
@@ -60,7 +59,7 @@ struct alignment_decision alignment_decide(
     // Case 4: Doesn't fit - need padding to reach boundary
     decision.padding_size = (size_t)(space_until_boundary - 8);  // 8-byte header
 
-    if (at_file_end || is_new_file) {
+    if (at_file_end) {
         // At file boundary - next file header will start at boundary
         decision.action = ALIGNMENT_PAD_THEN_FRAME;
     } else {

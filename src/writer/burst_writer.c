@@ -121,6 +121,20 @@ int burst_writer_flush(struct burst_writer *writer) {
     return 0;
 }
 
+/*
+burst_writer_add_file adds a file to the BURST archive.
+It may write a number of structures to the output in the process:
+- Local File Header (from caller)
+- Zstandard frames representing some compressed file data
+- Zip Data Descriptor
+- Zstandard skippable padding frames
+- Zstandard Start-of-Part metadata frames
+
+It is responsible for ensuring that it does not write any type of data
+other than a Start-of-Part frame or a Local File Header at an 8MiB part boundary,
+and for ensuring that sufficient free space to the next boundary exists for the next
+file's Local File Header.
+*/
 int burst_writer_add_file(struct burst_writer *writer,
                           FILE *input_file,
                           struct zip_local_header *lfh,
@@ -260,8 +274,7 @@ int burst_writer_add_file(struct burst_writer *writer,
         struct alignment_decision decision = alignment_decide(
             write_pos,
             comp_result.compressed_size,
-            at_eof,
-            false  // Not a new file (we're mid-file)
+            at_eof
         );
 
         // Execute alignment actions
@@ -306,7 +319,7 @@ int burst_writer_add_file(struct burst_writer *writer,
             free(entry->filename);
             return -1;
         }
-    }
+    } // file fully written out. Caller responsible for closing.
 
     free(input_buffer);
     free(output_buffer);

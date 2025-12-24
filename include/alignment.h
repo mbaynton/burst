@@ -25,8 +25,7 @@ struct alignment_decision {
 struct alignment_decision alignment_decide(
     uint64_t current_offset,
     size_t frame_size,
-    bool at_file_end,
-    bool is_new_file);
+    bool at_file_end);
 
 // Write skippable padding frame
 int alignment_write_padding_frame(struct burst_writer *writer, size_t padding_size);

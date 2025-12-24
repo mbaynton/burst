@@ -19,7 +19,7 @@ void test_exact_boundary_fit(void) {
     size_t frame_size = 1000 - sizeof(struct zip_data_descriptor);  // 984 bytes
 
     struct alignment_decision decision = alignment_decide(
-        current_offset, frame_size, true, false);
+        current_offset, frame_size, true);
 
     TEST_ASSERT_EQUAL(ALIGNMENT_WRITE_FRAME, decision.action);
     TEST_ASSERT_FALSE(decision.descriptor_after_boundary);
@@ -33,7 +33,7 @@ void test_frame_fits_comfortably(void) {
     size_t frame_size = 50000;  // 50 KB frame
 
     struct alignment_decision decision = alignment_decide(
-        current_offset, frame_size, true, false);
+        current_offset, frame_size, true);
 
     TEST_ASSERT_EQUAL(ALIGNMENT_WRITE_FRAME, decision.action);
     TEST_ASSERT_FALSE(decision.descriptor_after_boundary);
@@ -46,7 +46,7 @@ void test_frame_doesnt_fit_at_eof(void) {
     size_t frame_size = 200;  // Way too big
 
     struct alignment_decision decision = alignment_decide(
-        current_offset, frame_size, true, false);
+        current_offset, frame_size, true);
 
     TEST_ASSERT_EQUAL(ALIGNMENT_PAD_THEN_FRAME, decision.action);
     TEST_ASSERT_EQUAL(100 - 8, decision.padding_size);  // Space minus header
@@ -60,7 +60,7 @@ void test_frame_doesnt_fit_mid_file(void) {
     size_t frame_size = 200;
 
     struct alignment_decision decision = alignment_decide(
-        current_offset, frame_size, false, false);  // NOT at EOF
+        current_offset, frame_size, false);  // NOT at EOF
 
     TEST_ASSERT_EQUAL(ALIGNMENT_PAD_THEN_METADATA, decision.action);
     TEST_ASSERT_EQUAL(100 - 8, decision.padding_size);
@@ -74,7 +74,7 @@ void test_descriptor_doesnt_fit(void) {
                               // But frame + descriptor doesn't (80 + 16 = 96 + 8 = 104 > 100)
 
     struct alignment_decision decision = alignment_decide(
-        current_offset, frame_size, true, false);
+        current_offset, frame_size, true);
 
     TEST_ASSERT_EQUAL(ALIGNMENT_WRITE_FRAME, decision.action);
     TEST_ASSERT_TRUE(decision.descriptor_after_boundary);  // Key assertion!
@@ -106,52 +106,40 @@ void test_at_boundary(void) {
     size_t frame_size = 50000;
 
     struct alignment_decision decision = alignment_decide(
-        current_offset, frame_size, false, false);
+        current_offset, frame_size, false);
 
     // Should treat next boundary as target
     TEST_ASSERT_EQUAL(16777216, decision.next_boundary);
     TEST_ASSERT_EQUAL(ALIGNMENT_WRITE_FRAME, decision.action);
 }
 
-// Test 8: New file at boundary
-void test_new_file_at_boundary(void) {
-    uint64_t current_offset = 8388608 - 50;  // Close to boundary
-    size_t frame_size = 100;  // Doesn't fit
-
-    struct alignment_decision decision = alignment_decide(
-        current_offset, frame_size, false, true);  // is_new_file = true
-
-    // Should pad then write frame (no metadata for new files)
-    TEST_ASSERT_EQUAL(ALIGNMENT_PAD_THEN_FRAME, decision.action);
-}
-
-// Test 9: Minimum padding frame size
+// Test 8: Minimum padding frame size
 void test_minimum_padding_size(void) {
     // Test that MIN_SKIPPABLE_FRAME_SIZE (8 bytes) is correctly handled
     uint64_t current_offset = 8388608 - 16;  // 16 bytes before boundary
     size_t frame_size = 0;  // Tiny frame
 
     struct alignment_decision decision = alignment_decide(
-        current_offset, frame_size, false, false);
+        current_offset, frame_size, false);
 
     // Should fit (0 + 0 + 8 = 8 < 16)
     TEST_ASSERT_EQUAL(ALIGNMENT_WRITE_FRAME, decision.action);
 }
 
-// Test 10: Large frame spanning multiple chunks
+// Test 9: Large frame spanning multiple chunks
 void test_large_frame(void) {
     uint64_t current_offset = 100;
     size_t frame_size = 128 * 1024;  // 128 KB - BTRFS maximum
 
     struct alignment_decision decision = alignment_decide(
-        current_offset, frame_size, false, false);
+        current_offset, frame_size, false);
 
     // Should fit comfortably in 8 MiB part
     TEST_ASSERT_EQUAL(ALIGNMENT_WRITE_FRAME, decision.action);
     TEST_ASSERT_FALSE(decision.descriptor_after_boundary);
 }
 
-// Test 11: Empty file data descriptor near boundary
+// Test 10: Empty file data descriptor near boundary
 void test_empty_file_descriptor_alignment(void) {
     // Empty file: local header ends 20 bytes before boundary
     // Data descriptor (16 bytes) + min padding (8) = 24 bytes needed
@@ -164,7 +152,7 @@ void test_empty_file_descriptor_alignment(void) {
     TEST_ASSERT_TRUE(space < 16 + 8);  // Descriptor + min padding won't fit
 }
 
-// Test 12: Empty file descriptor fits comfortably
+// Test 11: Empty file descriptor fits comfortably
 void test_empty_file_descriptor_fits(void) {
     // Empty file with plenty of space before boundary
     uint64_t current_offset = 8388608 - 100;
@@ -174,7 +162,7 @@ void test_empty_file_descriptor_fits(void) {
     TEST_ASSERT_TRUE(space >= 16 + 8);  // Descriptor fits comfortably
 }
 
-// Test 13: Multiple empty files crossing boundary
+// Test 12: Multiple empty files crossing boundary
 void test_multiple_empty_files_near_boundary(void) {
     // Simulate multiple empty file structures
     // Each empty file: local header (30 + filename) + empty zstd frame (13) + descriptor (16)
@@ -200,7 +188,6 @@ int main(void) {
     RUN_TEST(test_boundary_calculation);
     RUN_TEST(test_write_position_calculation);
     RUN_TEST(test_at_boundary);
-    RUN_TEST(test_new_file_at_boundary);
     RUN_TEST(test_minimum_padding_size);
     RUN_TEST(test_large_frame);
     RUN_TEST(test_empty_file_descriptor_alignment);
