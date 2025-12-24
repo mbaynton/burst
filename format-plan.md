@@ -53,7 +53,11 @@ Design and document a ZIP-based archive format for BURST (BTRFS Ultrafast Restor
 
 Each 8 MiB boundary (0, 8,388,608, 16,777,216, ...) MUST begin with:
 - A ZIP local file header, OR
-- The start of a Zstandard frame (never mid-frame)
+- A Start-of-Part Zstandard skippable frame (never mid-frame)
+
+There is a single exception: once the zip central directory record at the
+end of the stream has begun, it may cross boundaries freely. The alignment rule
+ceases to apply.
 
 ### Zstandard Frame Constraints
 

@@ -208,7 +208,7 @@ int main(int argc, char **argv) {
     fclose(output);
 
     printf("\nArchive created successfully: %s\n", output_path);
-    printf("\nTest with: unzip -t %s\n", output_path);
+    printf("\nTest with: 7zz x %s\n", output_path);
 
     return 0;
 }
