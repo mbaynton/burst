@@ -36,7 +36,14 @@ struct alignment_decision alignment_decide(
 
     // Case 1: Exact fit (frame + optional descriptor fills exactly to boundary)
     if (space_until_boundary == space_required) {
-        decision.action = ALIGNMENT_WRITE_FRAME;
+        if (at_file_end) {
+            // Descriptor ends at boundary, next LFH starts there - OK
+            decision.action = ALIGNMENT_WRITE_FRAME;
+        } else {
+            // Frame ends exactly at boundary, more data follows
+            // Need Start-of-Part metadata frame at boundary
+            decision.action = ALIGNMENT_WRITE_FRAME_THEN_METADATA;
+        }
         return decision;
     }
 

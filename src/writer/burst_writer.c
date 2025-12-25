@@ -319,6 +319,17 @@ int burst_writer_add_file(struct burst_writer *writer,
             free(entry->filename);
             return -1;
         }
+
+        // Handle exact-fit mid-file case: write Start-of-Part at boundary
+        if (decision.action == ALIGNMENT_WRITE_FRAME_THEN_METADATA) {
+            if (alignment_write_start_of_part_frame(writer, total_uncompressed) != 0) {
+                free(input_buffer);
+                free(output_buffer);
+                free(entry->filename);
+                return -1;
+            }
+            writer->padding_bytes += 24;
+        }
     } // file fully written out. Caller responsible for closing.
 
     free(input_buffer);

@@ -177,6 +177,34 @@ void test_multiple_empty_files_near_boundary(void) {
     TEST_ASSERT_TRUE(space < 69);  // Not enough for another complete empty file
 }
 
+// Test 13: Mid-file frame fits exactly to boundary - needs Start-of-Part after
+void test_exact_fit_mid_file_needs_metadata(void) {
+    // Frame fits exactly to boundary, but more data follows (not at EOF)
+    uint64_t current_offset = 8388608 - 100;  // 100 bytes before boundary
+    size_t frame_size = 100;  // Exactly fills to boundary
+
+    struct alignment_decision decision = alignment_decide(
+        current_offset, frame_size, false);  // NOT at EOF
+
+    // Should return WRITE_FRAME_THEN_METADATA since more data follows
+    TEST_ASSERT_EQUAL(ALIGNMENT_WRITE_FRAME_THEN_METADATA, decision.action);
+    TEST_ASSERT_FALSE(decision.descriptor_after_boundary);
+}
+
+// Test 14: EOF frame+descriptor fits exactly to boundary - just write frame
+void test_exact_fit_eof_no_metadata(void) {
+    // Frame + descriptor fits exactly to boundary at EOF
+    uint64_t current_offset = 8388608 - 100;  // 100 bytes before boundary
+    size_t frame_size = 100 - sizeof(struct zip_data_descriptor);  // 84 bytes
+
+    struct alignment_decision decision = alignment_decide(
+        current_offset, frame_size, true);  // At EOF
+
+    // Should return WRITE_FRAME since next LFH will start at boundary
+    TEST_ASSERT_EQUAL(ALIGNMENT_WRITE_FRAME, decision.action);
+    TEST_ASSERT_FALSE(decision.descriptor_after_boundary);
+}
+
 int main(void) {
     UNITY_BEGIN();
 
@@ -193,6 +221,8 @@ int main(void) {
     RUN_TEST(test_empty_file_descriptor_alignment);
     RUN_TEST(test_empty_file_descriptor_fits);
     RUN_TEST(test_multiple_empty_files_near_boundary);
+    RUN_TEST(test_exact_fit_mid_file_needs_metadata);
+    RUN_TEST(test_exact_fit_eof_no_metadata);
 
     return UNITY_END();
 }

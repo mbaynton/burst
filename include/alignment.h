@@ -9,7 +9,8 @@
 enum alignment_action {
     ALIGNMENT_WRITE_FRAME,           // Write frame immediately
     ALIGNMENT_PAD_THEN_FRAME,        // Pad to boundary, then write frame
-    ALIGNMENT_PAD_THEN_METADATA      // Pad to boundary, write metadata, then frame
+    ALIGNMENT_PAD_THEN_METADATA,     // Pad to boundary, write metadata, then frame
+    ALIGNMENT_WRITE_FRAME_THEN_METADATA  // Write frame (fills to boundary), then metadata
 };
 
 // Result of alignment decision
