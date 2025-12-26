@@ -41,3 +41,36 @@ jobs:
         cd tests/integration
         set -e
         for i in $(ls *.sh); do bash $i; done
+
+  downloader-integration-test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cmake libzstd-dev zlib1g-dev awscli
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION }}
+
+    - name: Build downloader
+      run: |
+        mkdir build
+        cd build
+        cmake -DBUILD_DOWNLOADER=ON ..
+        make burst-downloader
+
+    - name: Run downloader integration tests
+      env:
+        BURST_TEST_BUCKET: ${{ secrets.BURST_TEST_BUCKET }}
+        BURST_TEST_KEY_PREFIX: "ci-test-artifacts/"
+        AWS_REGION: ${{ secrets.AWS_REGION }}
+      run: |
+        bash tests/integration/test_downloader_phase1.sh

@@ -160,44 +160,104 @@ Phase 1 Test: Downloading first 1024 bytes...
   Range GET: PASS
 ```
 
-### LocalStack Compatibility Issue ⚠️
+### Real S3 Testing Only
 
-**Status:** LocalStack testing is **not currently supported** due to aws-c-s3 limitations.
+**Status:** LocalStack testing is **not supported** due to aws-c-s3 limitations.
 
-**Problem:**
+**Why Real S3 Only:**
 - The aws-c-s3 library doesn't support endpoint override in the `aws_s3_client_config` structure
-- The `AWS_ENDPOINT_URL` environment variable is not recognized by aws-c-s3's meta request system
 - aws-c-s3 hard-codes Host header construction to `bucket.s3.region.amazonaws.com` format
-- LocalStack requires requests to go to `localhost:4566` (or custom endpoint)
+- LocalStack requires custom endpoint configuration which aws-c-s3 cannot provide
+- Testing against real S3 provides production-accurate behavior
 
-**Attempted Solutions:**
-1. ✗ Setting `endpoint_override` in downloader struct - Not supported in `aws_s3_client_config`
-2. ✗ Using `AWS_ENDPOINT_URL` environment variable - Not recognized by aws-c-s3
-3. ✗ Setting Host header manually in HTTP message - aws-c-s3 overrides it
+**Configuration for Integration Tests:**
 
-**Workaround for Future Phases:**
-- For LocalStack testing, we may need to either:
-  1. Use a different S3 client library (e.g., aws-sdk-cpp)
-  2. Implement custom endpoint resolution in aws-c-s3 fork
-  3. Use LocalStack Pro with custom domain routing
-  4. Skip LocalStack and test with real S3 only
+Integration tests require configuration via `.env` file (local development) or environment variables (CI/CD).
 
-**Current Recommendation:**
-- Phase 1 testing should be done with **real AWS S3**
-- The implementation is correct and follows aws-c-s3 best practices
-- Code compiles without warnings
-- All error handling is in place
+**Local Development Setup:**
+
+1. Copy the example configuration file:
+   ```bash
+   cp .env.example .env
+   ```
+
+2. Edit `.env` with your AWS account settings:
+   ```bash
+   # AWS Configuration for Integration Tests
+   AWS_PROFILE=default          # Your AWS profile (for SSO use)
+   AWS_REGION=us-east-1         # Your preferred AWS region
+
+   # S3 Test Bucket (must exist in your AWS account)
+   BURST_TEST_BUCKET=burst-integration-tests
+   BURST_TEST_KEY_PREFIX=test-artifacts/
+
+   # Optional: Override output directory
+   #BURST_TEST_OUTPUT_DIR=/tmp/burst-test-output
+   ```
+
+3. Create the S3 bucket if it doesn't exist:
+   ```bash
+   aws s3 mb s3://burst-integration-tests --region us-east-1
+   ```
+
+4. If using AWS SSO, log in:
+   ```bash
+   aws sso login --profile your-profile
+   ```
+
+5. Run integration tests:
+   ```bash
+   bash tests/integration/test_downloader_phase1.sh
+   ```
+
+**GitHub Actions / CI Setup:**
+
+Configure the following secrets in your GitHub repository:
+- `AWS_ACCESS_KEY_ID` - IAM user access key
+- `AWS_SECRET_ACCESS_KEY` - IAM user secret key
+- `AWS_REGION` - AWS region (e.g., us-east-1)
+- `BURST_TEST_BUCKET` - S3 bucket for test artifacts
+
+**Required IAM Permissions:**
+
+The IAM user or role must have these S3 permissions:
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject",
+        "s3:GetObject",
+        "s3:DeleteObject",
+        "s3:HeadObject"
+      ],
+      "Resource": "arn:aws:s3:::YOUR_BUCKET_NAME/test-artifacts/*"
+    }
+  ]
+}
+```
+
+**Cost Considerations:**
+
+Integration tests:
+- Upload a 10 MiB test file
+- Download the first 1024 bytes
+- Immediately delete the test file
+- Cost: ~$0.0001 per test run (negligible)
 
 ### Integration Test Script
 
 An integration test script is provided at `tests/integration/test_downloader_phase1.sh` that:
-- Sets up LocalStack via docker-compose
-- Creates test data
-- Uploads to S3
-- Runs the downloader
-- Verifies results
+- Loads configuration from `.env` (local) or environment variables (CI)
+- Creates a 10 MiB test file with random data
+- Uploads test file to real AWS S3
+- Runs the downloader Phase 1 tests
+- Verifies object size detection and range GET functionality
+- Cleans up S3 objects automatically (even on failure)
 
-**Note:** This script will encounter the LocalStack compatibility issue described above. It's provided for future use when endpoint override support is added or when testing with real S3.
+The script provides clear error messages if configuration is missing or AWS credentials are not set up.
 
 ## Unit Tests
 

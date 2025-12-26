@@ -36,3 +36,6 @@ Testing/Temporary
 .DS_Store
 Thumbs.db
 tmp/
+
+# Environment configuration
+.env
