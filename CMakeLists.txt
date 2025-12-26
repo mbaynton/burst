@@ -4,6 +4,9 @@ project(burst VERSION 0.1.0 LANGUAGES C)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
+# AWS-C-S3 for downloader (optional build)
+option(BUILD_DOWNLOADER "Build BURST downloader with AWS-C-S3 support" ON)
+
 # Debug mode option
 option(BURST_DEBUG "Enable debug assertions and validation checks" OFF)
 if(BURST_DEBUG)
@@ -55,3 +58,154 @@ install(TARGETS burst-writer DESTINATION bin)
 # Testing
 enable_testing()
 add_subdirectory(tests)
+
+if(BUILD_DOWNLOADER)
+    message(STATUS "Building downloader with AWS-C-S3 support")
+    message(STATUS "Note: First build will take 10-15 minutes to fetch and compile AWS CRT")
+
+    include(ExternalProject)
+
+    # Set common build configuration
+    set(AWS_CRT_BUILD_ARGS
+        -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+        -DCMAKE_INSTALL_PREFIX=${CMAKE_BINARY_DIR}/aws-crt-install
+        -DBUILD_TESTING=OFF
+        -DBUILD_SHARED_LIBS=OFF
+    )
+
+    set(AWS_INSTALL_DIR ${CMAKE_BINARY_DIR}/aws-crt-install)
+
+    # Build aws-c-common first (base library)
+    ExternalProject_Add(aws-c-common-ext
+        GIT_REPOSITORY https://github.com/awslabs/aws-c-common.git
+        GIT_TAG main
+        CMAKE_ARGS ${AWS_CRT_BUILD_ARGS}
+        INSTALL_DIR ${AWS_INSTALL_DIR}
+    )
+
+    # Build s2n-tls (depends on OpenSSL)
+    ExternalProject_Add(s2n-ext
+        DEPENDS aws-c-common-ext
+        GIT_REPOSITORY https://github.com/aws/s2n-tls.git
+        GIT_TAG main
+        CMAKE_ARGS ${AWS_CRT_BUILD_ARGS} -DCMAKE_PREFIX_PATH=${AWS_INSTALL_DIR}
+        INSTALL_DIR ${AWS_INSTALL_DIR}
+    )
+
+    # Build aws-c-sdkutils
+    ExternalProject_Add(aws-c-sdkutils-ext
+        DEPENDS aws-c-common-ext
+        GIT_REPOSITORY https://github.com/awslabs/aws-c-sdkutils.git
+        GIT_TAG main
+        CMAKE_ARGS ${AWS_CRT_BUILD_ARGS} -DCMAKE_PREFIX_PATH=${AWS_INSTALL_DIR}
+        INSTALL_DIR ${AWS_INSTALL_DIR}
+    )
+
+    # Build aws-checksums
+    ExternalProject_Add(aws-checksums-ext
+        DEPENDS aws-c-common-ext
+        GIT_REPOSITORY https://github.com/awslabs/aws-checksums.git
+        GIT_TAG main
+        CMAKE_ARGS ${AWS_CRT_BUILD_ARGS} -DCMAKE_PREFIX_PATH=${AWS_INSTALL_DIR}
+        INSTALL_DIR ${AWS_INSTALL_DIR}
+    )
+
+    # Build aws-c-cal (crypto abstraction)
+    ExternalProject_Add(aws-c-cal-ext
+        DEPENDS aws-c-common-ext
+        GIT_REPOSITORY https://github.com/awslabs/aws-c-cal.git
+        GIT_TAG main
+        CMAKE_ARGS ${AWS_CRT_BUILD_ARGS} -DCMAKE_PREFIX_PATH=${AWS_INSTALL_DIR}
+        INSTALL_DIR ${AWS_INSTALL_DIR}
+    )
+
+    # Build aws-c-io
+    ExternalProject_Add(aws-c-io-ext
+        DEPENDS aws-c-common-ext aws-c-cal-ext s2n-ext
+        GIT_REPOSITORY https://github.com/awslabs/aws-c-io.git
+        GIT_TAG main
+        CMAKE_ARGS ${AWS_CRT_BUILD_ARGS} -DCMAKE_PREFIX_PATH=${AWS_INSTALL_DIR}
+        INSTALL_DIR ${AWS_INSTALL_DIR}
+    )
+
+    # Build aws-c-compression
+    ExternalProject_Add(aws-c-compression-ext
+        DEPENDS aws-c-common-ext
+        GIT_REPOSITORY https://github.com/awslabs/aws-c-compression.git
+        GIT_TAG main
+        CMAKE_ARGS ${AWS_CRT_BUILD_ARGS} -DCMAKE_PREFIX_PATH=${AWS_INSTALL_DIR}
+        INSTALL_DIR ${AWS_INSTALL_DIR}
+    )
+
+    # Build aws-c-http
+    ExternalProject_Add(aws-c-http-ext
+        DEPENDS aws-c-io-ext aws-c-compression-ext
+        GIT_REPOSITORY https://github.com/awslabs/aws-c-http.git
+        GIT_TAG main
+        CMAKE_ARGS ${AWS_CRT_BUILD_ARGS} -DCMAKE_PREFIX_PATH=${AWS_INSTALL_DIR}
+        INSTALL_DIR ${AWS_INSTALL_DIR}
+    )
+
+    # Build aws-c-auth
+    ExternalProject_Add(aws-c-auth-ext
+        DEPENDS aws-c-http-ext aws-c-cal-ext aws-c-io-ext aws-c-sdkutils-ext
+        GIT_REPOSITORY https://github.com/awslabs/aws-c-auth.git
+        GIT_TAG main
+        CMAKE_ARGS ${AWS_CRT_BUILD_ARGS} -DCMAKE_PREFIX_PATH=${AWS_INSTALL_DIR}
+        INSTALL_DIR ${AWS_INSTALL_DIR}
+    )
+
+    # Build aws-c-s3
+    ExternalProject_Add(aws-c-s3-ext
+        DEPENDS aws-c-auth-ext aws-c-http-ext
+        GIT_REPOSITORY https://github.com/awslabs/aws-c-s3.git
+        GIT_TAG main
+        CMAKE_ARGS ${AWS_CRT_BUILD_ARGS} -DCMAKE_PREFIX_PATH=${AWS_INSTALL_DIR}
+        INSTALL_DIR ${AWS_INSTALL_DIR}
+    )
+
+    # Set variables so our executable can link against aws-c-s3
+    set(AWS_C_S3_LIBRARIES
+        ${AWS_INSTALL_DIR}/lib/libaws-c-s3.a
+        ${AWS_INSTALL_DIR}/lib/libaws-c-auth.a
+        ${AWS_INSTALL_DIR}/lib/libaws-c-http.a
+        ${AWS_INSTALL_DIR}/lib/libaws-c-io.a
+        ${AWS_INSTALL_DIR}/lib/libaws-c-compression.a
+        ${AWS_INSTALL_DIR}/lib/libaws-c-cal.a
+        ${AWS_INSTALL_DIR}/lib/libaws-checksums.a
+        ${AWS_INSTALL_DIR}/lib/libaws-c-sdkutils.a
+        ${AWS_INSTALL_DIR}/lib/libaws-c-common.a
+        ${AWS_INSTALL_DIR}/lib/libs2n.a
+    )
+
+    set(AWS_C_S3_INCLUDE_DIRS ${AWS_INSTALL_DIR}/include)
+
+    # Archive downloader executable
+    add_executable(burst-downloader
+        src/downloader/main.c
+        src/downloader/s3_client.c
+        src/downloader/s3_operations.c
+    )
+
+    # burst-downloader depends on all AWS CRT external projects completing
+    add_dependencies(burst-downloader aws-c-s3-ext)
+
+    target_include_directories(burst-downloader PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${ZSTD_INCLUDE_DIR}
+        ${AWS_C_S3_INCLUDE_DIRS}
+    )
+
+    target_link_libraries(burst-downloader PRIVATE
+        ${AWS_C_S3_LIBRARIES}
+        ${ZSTD_LIBRARY}
+        ssl
+        crypto
+        pthread
+        dl
+        m
+    )
+
+    install(TARGETS burst-downloader DESTINATION bin)
+endif(BUILD_DOWNLOADER)
+
