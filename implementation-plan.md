@@ -125,12 +125,14 @@ Download BURST archives from S3 with 8-16 concurrent part downloads, immediately
 #### Core Components
 1. **AWS-C-S3 Client**
    - Initialize client with optimal configuration
-   - Create 8-16 concurrent meta-requests
+   - Obtain central directory part (last 8 MiB) and supply to central directory parser
+   - Buffer data preceding central directory for later extraction after we download the final part
+   - If s3 response headers indicate total obejct size is larger than central directory part, issue concurrent ranged GET requests for each 8 MiB part from start to data already fetched.
    - Handle streaming callbacks
    - Manage retries and failures
 
 2. **Central Directory Parser**
-   - Download last 8 MiB of S3 object first
+   Given a pointer to a byte buffer ending in the end of a zip file,
    - Parse end of central directory record
    - Parse central directory headers
    - Build map: part_index → files starting in that part
@@ -151,30 +153,32 @@ Download BURST archives from S3 with 8-16 concurrent part downloads, immediately
 #### Implementation Strategy
 
 **Phase 1: AWS-C-S3 Integration** (3-4 days)
-- Set up AWS CRT build environment
+- Create src/reader, create basic main.c
+- Determine how best to build aws-c-s3 functionality relevant to our needs into our project or link to it
 - Initialize aws-c-s3 client with optimal config
+- Add typical S3 client configuration options to main() (e.g., region, credentials, endpoint)
 - Implement basic GET request with Range header
 - Test streaming callback with simple S3 object
-- Verify concurrent meta-request execution
+- Test downloading last 8 MiB of a BURST archive (negative range header), determine total object size from response headers
 
 **Phase 2: Central Directory Parsing** (2-3 days)
 - Implement EOCD record parser
 - Implement central directory header parser
+- Implement unit tests based on known ZIP structures to achieve nearly full code coverage of central directory parsing
 - Build part_index → file list mapping
-- Handle ZIP64 format
+- Test with small (< 8 MiB) zip files created by the `zip` tool
 - Test with BURST archives from writer
 
 **Phase 3: Stream Processing** (3-4 days)
-- Implement sequential frame traversal algorithm
+- Implement sequential frame traversal algorithm that can start from any 8 MiB boundary and track required inputs to BTRFS_IOC_ENCODED_WRITE
+  - Use `ZSTD_getFrameContentSize()` and `ZSTD_findFrameCompressedSize()`
 - Parse ZIP local headers
 - Detect skippable frames (padding and metadata)
 - Extract Zstandard frames
-- Handle frame boundary buffering (<128 KiB per part)
-- Use `ZSTD_getFrameContentSize()` and `ZSTD_findFrameCompressedSize()`
 
 **Phase 4: BTRFS Integration** (2-3 days)
 - Implement `do_write_encoded()` wrapper
-- Implement `do_write_unencoded()` fallback
+- Implement `do_write_unencoded()` fallback if compressed > uncompressed; see /home/mbaynton/projects/awslabs/btrfs_zstd/loader.c.
 - Handle BTRFS ioctl errors gracefully
 - Test with actual BTRFS filesystem
 - Verify concurrent writes to same file work correctly
@@ -192,6 +196,10 @@ Download BURST archives from S3 with 8-16 concurrent part downloads, immediately
 - Test concurrent writes don't corrupt files
 - Measure performance on EC2
 - Test error conditions (network failures, disk full, etc.)
+
+**Phase 7: Optimization and Cleanup** (2 days)
+- Investigate whether our s3_client_config is always optimal for any ec2 instance type,
+  or whether we should support tuning based on the s3-platform_info facility in aws-c-s3.
 
 #### Key Data Structures
 
