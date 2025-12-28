@@ -24,7 +24,6 @@ struct burst_downloader {
     // Configuration
     size_t max_concurrent_connections;
     char *output_dir;
-    char *endpoint_override;  // For LocalStack testing
     char *profile_name;  // AWS profile name for SSO and credentials
 };
 
@@ -38,9 +37,6 @@ struct burst_downloader *burst_downloader_create(
     const char *profile_name  // Can be NULL
 );
 void burst_downloader_destroy(struct burst_downloader *downloader);
-
-// Set optional endpoint override (for LocalStack/Minio)
-void burst_downloader_set_endpoint(struct burst_downloader *downloader, const char *endpoint);
 
 // Phase 1 test functions
 int burst_downloader_get_object_size(struct burst_downloader *downloader);

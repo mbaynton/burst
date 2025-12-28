@@ -17,7 +17,6 @@ static void print_usage(const char *program_name) {
     printf("  -r, --region REGION       AWS region (e.g., us-east-1)\n");
     printf("  -o, --output-dir DIR      Output directory for extracted files\n");
     printf("\nOptional:\n");
-    printf("  -e, --endpoint URL        Custom S3 endpoint (for LocalStack/Minio)\n");
     printf("  -c, --connections NUM     Max concurrent connections (default: 16)\n");
     printf("  -p, --profile PROFILE     AWS profile name (default: AWS_PROFILE env or 'default')\n");
     printf("  -h, --help                Show this help message\n");
@@ -58,7 +57,6 @@ struct burst_downloader *burst_downloader_create(
     downloader->profile_name = profile_name ? strdup(profile_name) : NULL;
     downloader->max_concurrent_connections = max_connections;
     downloader->object_size = 0;
-    downloader->endpoint_override = NULL;
     downloader->tls_ctx = NULL;
 
     if (!downloader->bucket || !downloader->key || !downloader->region || !downloader->output_dir) {
@@ -77,18 +75,6 @@ struct burst_downloader *burst_downloader_create(
     return downloader;
 }
 
-void burst_downloader_set_endpoint(struct burst_downloader *downloader, const char *endpoint) {
-    if (!downloader) {
-        return;
-    }
-
-    if (downloader->endpoint_override) {
-        free(downloader->endpoint_override);
-    }
-
-    downloader->endpoint_override = endpoint ? strdup(endpoint) : NULL;
-}
-
 void burst_downloader_destroy(struct burst_downloader *downloader) {
     if (!downloader) {
         return;
@@ -102,7 +88,6 @@ void burst_downloader_destroy(struct burst_downloader *downloader) {
     free(downloader->key);
     free(downloader->region);
     free(downloader->output_dir);
-    free(downloader->endpoint_override);
     free(downloader->profile_name);
 
     free(downloader);
@@ -115,7 +100,6 @@ int main(int argc, char **argv) {
     const char *key = NULL;
     const char *region = NULL;
     const char *output_dir = NULL;
-    const char *endpoint = NULL;
     const char *profile = NULL;
     size_t max_connections = 16;
 
@@ -125,7 +109,6 @@ int main(int argc, char **argv) {
         {"key", required_argument, 0, 'k'},
         {"region", required_argument, 0, 'r'},
         {"output-dir", required_argument, 0, 'o'},
-        {"endpoint", required_argument, 0, 'e'},
         {"connections", required_argument, 0, 'c'},
         {"profile", required_argument, 0, 'p'},
         {"help", no_argument, 0, 'h'},
@@ -133,7 +116,7 @@ int main(int argc, char **argv) {
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "b:k:r:o:e:c:p:h", long_options, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "b:k:r:o:c:p:h", long_options, NULL)) != -1) {
         switch (opt) {
             case 'b':
                 bucket = optarg;
@@ -146,9 +129,6 @@ int main(int argc, char **argv) {
                 break;
             case 'o':
                 output_dir = optarg;
-                break;
-            case 'e':
-                endpoint = optarg;
                 break;
             case 'c':
                 max_connections = atoi(optarg);
@@ -183,9 +163,6 @@ int main(int argc, char **argv) {
     printf("Region:      %s\n", region);
     printf("Output Dir:  %s\n", output_dir);
     printf("Connections: %zu\n", max_connections);
-    if (endpoint) {
-        printf("Endpoint:    %s\n", endpoint);
-    }
     printf("\n");
 
     // Profile resolution: CLI arg > AWS_PROFILE env > NULL (defaults to "default")
@@ -202,11 +179,6 @@ int main(int argc, char **argv) {
     if (!downloader) {
         fprintf(stderr, "Error: Failed to create downloader\n");
         return 1;
-    }
-
-    // Set endpoint if specified
-    if (endpoint) {
-        burst_downloader_set_endpoint(downloader, endpoint);
     }
 
     printf("Success! S3 client initialized.\n\n");

@@ -217,13 +217,6 @@ int s3_client_init(struct burst_downloader *downloader) {
         .enable_read_backpressure = false,
     };
 
-    // Note: endpoint_override not supported in aws_s3_client_config
-    // For LocalStack testing, use AWS_ENDPOINT_URL environment variable instead
-    if (downloader->endpoint_override) {
-        fprintf(stderr, "Warning: endpoint override not implemented in this AWS CRT version\n");
-        fprintf(stderr, "         Use AWS_ENDPOINT_URL environment variable instead\n");
-    }
-
     downloader->s3_client = aws_s3_client_new(downloader->allocator, &client_config);
     if (!downloader->s3_client) {
         fprintf(stderr, "Error: Failed to create S3 client: %s\n",
