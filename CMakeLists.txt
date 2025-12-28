@@ -157,7 +157,7 @@ if(BUILD_DOWNLOADER)
 
     # Build aws-c-s3
     ExternalProject_Add(aws-c-s3-ext
-        DEPENDS aws-c-auth-ext aws-c-http-ext
+        DEPENDS aws-c-auth-ext aws-c-http-ext aws-c-io-ext aws-c-compression-ext aws-c-cal-ext aws-checksums-ext aws-c-sdkutils-ext
         GIT_REPOSITORY https://github.com/awslabs/aws-c-s3.git
         GIT_TAG main
         CMAKE_ARGS ${AWS_CRT_BUILD_ARGS} -DCMAKE_PREFIX_PATH=${AWS_INSTALL_DIR}
