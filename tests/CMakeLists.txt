@@ -107,9 +107,15 @@ endfunction()
 # Helper library with downloader components for testing (no AWS dependencies)
 add_library(burst_downloader_lib STATIC
     ../src/downloader/central_dir_parser.c
+    ../src/downloader/stream_processor.c
+    ../src/downloader/frame_parser.c
+    ../src/downloader/btrfs_writer.c
 )
 target_include_directories(burst_downloader_lib PUBLIC
     ../include
+)
+target_link_libraries(burst_downloader_lib PUBLIC
+    ${ZSTD_LIBRARY}
 )
 # Enable debug assertions for tests
 target_compile_definitions(burst_downloader_lib PUBLIC DEBUG)
@@ -132,6 +138,72 @@ add_test(NAME test_central_dir_parser COMMAND test_central_dir_parser)
 # Mocked unit tests
 add_mocked_test(test_writer_chunking
     "${CMAKE_CURRENT_SOURCE_DIR}/mocks/compression_mock.h")
+
+# Stream processor test with mocked BTRFS writer
+# Note: This test links against a modified downloader lib that excludes btrfs_writer.c
+# because we want to use the mocked version instead
+add_library(burst_downloader_lib_no_btrfs STATIC
+    ../src/downloader/central_dir_parser.c
+    ../src/downloader/stream_processor.c
+    ../src/downloader/frame_parser.c
+)
+target_include_directories(burst_downloader_lib_no_btrfs PUBLIC
+    ../include
+)
+target_link_libraries(burst_downloader_lib_no_btrfs PUBLIC
+    ${ZSTD_LIBRARY}
+)
+
+# Generate mock for btrfs_writer
+set(btrfs_mock_header "${CMAKE_CURRENT_SOURCE_DIR}/mocks/btrfs_writer_mock.h")
+set(btrfs_mock_c "${CMAKE_CURRENT_BINARY_DIR}/mocks/Mock_btrfs_writer_mock.c")
+set(btrfs_mock_h "${CMAKE_CURRENT_BINARY_DIR}/mocks/Mock_btrfs_writer_mock.h")
+
+add_custom_command(
+    OUTPUT ${btrfs_mock_c} ${btrfs_mock_h}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/mocks
+    COMMAND ${RUBY_EXECUTABLE} ${cmock_SOURCE_DIR}/lib/cmock.rb
+            -o${CMAKE_CURRENT_SOURCE_DIR}/cmock_config.yml
+            --mock_path=${CMAKE_CURRENT_BINARY_DIR}/mocks
+            ${btrfs_mock_header}
+    DEPENDS ${btrfs_mock_header} ${CMAKE_CURRENT_SOURCE_DIR}/cmock_config.yml
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    COMMENT "Generating mock for btrfs_writer_mock.h"
+)
+
+add_executable(test_stream_processor
+    unit/test_stream_processor.c
+    ${btrfs_mock_c}
+)
+
+target_include_directories(test_stream_processor PRIVATE
+    ${CMAKE_CURRENT_BINARY_DIR}/mocks
+    ${CMAKE_CURRENT_SOURCE_DIR}/mocks
+    ../include
+)
+
+target_link_libraries(test_stream_processor
+    burst_downloader_lib_no_btrfs
+    unity
+    cmock
+    ${ZSTD_LIBRARY}
+)
+
+add_test(NAME test_stream_processor COMMAND test_stream_processor)
+
+# Frame parser unit test (tests parse_next_frame directly)
+add_executable(test_frame_parser
+    unit/test_frame_parser.c
+    ../src/downloader/frame_parser.c
+)
+target_include_directories(test_frame_parser PRIVATE
+    ../include
+)
+target_link_libraries(test_frame_parser
+    unity
+    ${ZSTD_LIBRARY}
+)
+add_test(NAME test_frame_parser COMMAND test_frame_parser)
 
 # Downloader integration tests (C-based)
 add_executable(test_central_dir_parser_integration integration/test_central_dir_parser.c)

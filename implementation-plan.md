@@ -170,11 +170,12 @@ Download BURST archives from S3 with 8-16 concurrent part downloads, immediately
 - Test with BURST archives from writer
 
 **Phase 3: Stream Processing** (3-4 days)
-- Implement sequential frame traversal algorithm that can start from any 8 MiB boundary and track required inputs to BTRFS_IOC_ENCODED_WRITE
+- Implement sequential frame traversal algorithm that can start from any 8 MiB boundary and determine required inputs to BTRFS_IOC_ENCODED_WRITE for each non-skippable zstandard frame encountered.
   - Use `ZSTD_getFrameContentSize()` and `ZSTD_findFrameCompressedSize()`
 - Parse ZIP local headers
 - Detect skippable frames (padding and metadata)
-- Extract Zstandard frames
+- Define function signature for performing a BTRFS_IOC_ENCODED_WRITE ioctl call, and verify expected calls and parameters
+for known inputs (byte streams, parsed central directories) using unit tests and CMock.
 
 **Phase 4: BTRFS Integration** (2-3 days)
 - Implement `do_write_encoded()` wrapper
@@ -201,6 +202,8 @@ Download BURST archives from S3 with 8-16 concurrent part downloads, immediately
 - Investigate whether our s3_client_config is always optimal for any ec2 instance type,
   or whether we should support tuning based on the s3-platform_info facility in aws-c-s3.
 - Compare central directory offset and crc32 data with the local file header data as an integrity check.
+- Add logging and metrics
+  * max frame buffer size in stream_processor -- shouldn't need to buffer more than a few frames at once
 
 #### Key Data Structures
 
