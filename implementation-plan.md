@@ -177,12 +177,15 @@ Download BURST archives from S3 with 8-16 concurrent part downloads, immediately
 - Define function signature for performing a BTRFS_IOC_ENCODED_WRITE ioctl call, and verify expected calls and parameters
 for known inputs (byte streams, parsed central directories) using unit tests and CMock.
 
-**Phase 4: BTRFS Integration** (2-3 days)
-- Implement `do_write_encoded()` wrapper
-- Implement `do_write_unencoded()` fallback if compressed > uncompressed; see /home/mbaynton/projects/awslabs/btrfs_zstd/loader.c.
-- Handle BTRFS ioctl errors gracefully
+**Phase 4: Integrate phases 1 - 3** (2-3 days)
+- Update downloader main() to:
+  - Download central directory part
+  - Parse central directory
+  - Issue serial ranged GET requests for each 8 MiB part
+  - Invoke stream processor in the callback for each part's data
+- Test with actual AWS S3 bucket (infrastructure for actual S3 integration testing already exists)
 - Test with actual BTRFS filesystem
-- Verify concurrent writes to same file work correctly
+- Verify valid extraction by downloading BURST archives with aws CLI and extracting with 7zz to a temporary location for comparison
 
 **Phase 5: Concurrency Management** (2-3 days)
 - Implement per-part context tracking
