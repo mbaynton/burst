@@ -200,6 +200,7 @@ Download BURST archives from S3 with 8-16 concurrent part downloads, immediately
 **Phase 7: Optimization and Cleanup** (2 days)
 - Investigate whether our s3_client_config is always optimal for any ec2 instance type,
   or whether we should support tuning based on the s3-platform_info facility in aws-c-s3.
+- Compare central directory offset and crc32 data with the local file header data as an integrity check.
 
 #### Key Data Structures
 
