@@ -104,12 +104,30 @@ function(add_mocked_test test_name mock_headers)
     add_test(NAME ${test_name} COMMAND ${test_name})
 endfunction()
 
+# Helper library with downloader components for testing (no AWS dependencies)
+add_library(burst_downloader_lib STATIC
+    ../src/downloader/central_dir_parser.c
+)
+target_include_directories(burst_downloader_lib PUBLIC
+    ../include
+)
+# Enable debug assertions for tests
+target_compile_definitions(burst_downloader_lib PUBLIC DEBUG)
+
 # Unit tests
 add_unit_test(test_zip_structures)
 add_unit_test(test_writer_core)
 add_unit_test(test_crc32)
 add_unit_test(test_zstd_frames)
 add_unit_test(test_alignment)
+
+# Downloader unit tests (use burst_downloader_lib instead of burst_writer_lib)
+add_executable(test_central_dir_parser unit/test_central_dir_parser.c)
+target_link_libraries(test_central_dir_parser
+    burst_downloader_lib
+    unity
+)
+add_test(NAME test_central_dir_parser COMMAND test_central_dir_parser)
 
 # Mocked unit tests
 add_mocked_test(test_writer_chunking

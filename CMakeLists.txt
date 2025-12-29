@@ -185,6 +185,7 @@ if(BUILD_DOWNLOADER)
         src/downloader/main.c
         src/downloader/s3_client.c
         src/downloader/s3_operations.c
+        src/downloader/central_dir_parser.c
     )
 
     # burst-downloader depends on all AWS CRT external projects completing
