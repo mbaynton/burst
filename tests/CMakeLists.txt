@@ -133,7 +133,15 @@ add_test(NAME test_central_dir_parser COMMAND test_central_dir_parser)
 add_mocked_test(test_writer_chunking
     "${CMAKE_CURRENT_SOURCE_DIR}/mocks/compression_mock.h")
 
-# Integration tests
+# Downloader integration tests (C-based)
+add_executable(test_central_dir_parser_integration integration/test_central_dir_parser.c)
+target_link_libraries(test_central_dir_parser_integration
+    burst_downloader_lib
+    unity
+)
+add_test(NAME test_central_dir_parser_integration COMMAND test_central_dir_parser_integration)
+
+# Integration tests (shell-based)
 add_test(NAME test_writer_basic
          COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/test_writer_basic.sh
          WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
