@@ -48,4 +48,52 @@ int burst_downloader_test_range_get(
     size_t *out_size
 );
 
+// Forward declarations for stream processor
+struct part_processor_state;
+
+/**
+ * Extract BURST archive from S3 to local filesystem.
+ * This is the main entry point for Phase 4.
+ *
+ * @param downloader Initialized downloader with bucket, key, region, output_dir
+ * @return 0 on success, non-zero on error
+ */
+int burst_downloader_extract(struct burst_downloader *downloader);
+
+/**
+ * Fetch the central directory part using suffix-length Range header.
+ * Sends Range: bytes=-8388608 to get last 8 MiB (or entire file if smaller).
+ * Parses Content-Range response header to determine total object size.
+ * Returns buffer that must be freed with aws_mem_release().
+ *
+ * @param downloader      Initialized downloader
+ * @param out_buffer      Returns the fetched data
+ * @param out_size        Returns the size of fetched data
+ * @param out_start_offset Returns the archive offset where buffer starts
+ * @param out_total_size  Returns the total object size (from Content-Range)
+ * @return 0 on success, non-zero on error
+ */
+int burst_downloader_fetch_cd_part(
+    struct burst_downloader *downloader,
+    uint8_t **out_buffer,
+    size_t *out_size,
+    uint64_t *out_start_offset,
+    uint64_t *out_total_size
+);
+
+/**
+ * Stream a single 8 MiB part through the stream processor.
+ * Downloads the part using range GET and feeds chunks directly to the processor.
+ *
+ * @param downloader  Initialized downloader
+ * @param part_index  Index of the part to download (0-based)
+ * @param processor   Initialized stream processor for this part
+ * @return 0 on success, non-zero on error
+ */
+int burst_downloader_stream_part(
+    struct burst_downloader *downloader,
+    uint32_t part_index,
+    struct part_processor_state *processor
+);
+
 #endif // BURST_DOWNLOADER_H
