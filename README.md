@@ -143,6 +143,33 @@ bash tests/integration/test_zstd_compression.sh
 bash tests/integration/test_alignment_integration.sh
 ```
 
+#### S3 Integration Tests
+
+The downloader integration tests require AWS S3 access and pre-created test fixtures.
+
+**One-time setup:**
+```bash
+# 1. Configure AWS credentials (e.g., via SSO)
+aws sso login --profile <your-profile>
+
+# 2. Copy and edit .env with your AWS settings
+cp .env.example .env
+# Edit .env: set BURST_TEST_BUCKET, AWS_REGION, AWS_PROFILE
+
+# 3. Create test fixtures in S3 (only needed once)
+bash tests/integration/setup_s3.sh
+```
+
+**Run S3 tests:**
+```bash
+# Downloader integration test
+bash tests/integration/test_downloader_phase1.sh
+```
+
+The `setup_s3.sh` script creates three BURST archives (small, medium, large) with
+random data and uploads them along with SHA256 checksums to your S3 bucket.
+These fixtures are persistent and shared across test runs.
+
 #### Validation Tools
 ```bash
 # Verify 8 MiB boundary alignment in any archive
