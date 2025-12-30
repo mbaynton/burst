@@ -85,15 +85,15 @@ int s3_client_init(struct burst_downloader *downloader) {
     }
     struct aws_byte_cursor profile_cursor = aws_byte_cursor_from_c_str(profile_to_use);
 
-    // Build custom credentials provider chain with SSO
-    // Priority: env vars > SSO > profile > STS web identity > ECS > IMDS
+    // Build custom credentials provider chain with SSO and process support
+    // Priority: env vars > SSO > process (credential_process) > profile > STS web identity > ECS > IMDS
 
     // 1. Environment variables provider
     struct aws_credentials_provider_environment_options env_options = {.shutdown_options = {0}};
     struct aws_credentials_provider *env_provider =
         aws_credentials_provider_new_environment(downloader->allocator, &env_options);
 
-    // 2. SSO provider (NEW!)
+    // 2. SSO provider
     struct aws_credentials_provider_sso_options sso_options = {
         .shutdown_options = {0},
         .bootstrap = downloader->client_bootstrap,
@@ -103,7 +103,16 @@ int s3_client_init(struct burst_downloader *downloader) {
     struct aws_credentials_provider *sso_provider =
         aws_credentials_provider_new_sso(downloader->allocator, &sso_options);
 
-    // 3. Profile provider (static credentials and assume-role)
+    // 3. Process provider (reads credential_process from profile config)
+    // This enables using `aws configure export-credentials` for SSO profiles
+    struct aws_credentials_provider_process_options process_options = {
+        .shutdown_options = {0},
+        .profile_to_use = profile_cursor,
+    };
+    struct aws_credentials_provider *process_provider =
+        aws_credentials_provider_new_process(downloader->allocator, &process_options);
+
+    // 5. Profile provider (static credentials and assume-role)
     struct aws_credentials_provider_profile_options profile_options = {
         .shutdown_options = {0},
         .bootstrap = downloader->client_bootstrap,
@@ -113,7 +122,7 @@ int s3_client_init(struct burst_downloader *downloader) {
     struct aws_credentials_provider *profile_provider =
         aws_credentials_provider_new_profile(downloader->allocator, &profile_options);
 
-    // 4. STS web identity provider
+    // 7. STS web identity provider
     struct aws_credentials_provider_sts_web_identity_options web_identity_options = {
         .shutdown_options = {0},
         .bootstrap = downloader->client_bootstrap,
@@ -122,7 +131,7 @@ int s3_client_init(struct burst_downloader *downloader) {
     struct aws_credentials_provider *web_identity_provider =
         aws_credentials_provider_new_sts_web_identity(downloader->allocator, &web_identity_options);
 
-    // 5. ECS provider
+    // 9. ECS provider
     struct aws_credentials_provider_ecs_environment_options ecs_options = {
         .shutdown_options = {0},
         .bootstrap = downloader->client_bootstrap,
@@ -131,7 +140,7 @@ int s3_client_init(struct burst_downloader *downloader) {
     struct aws_credentials_provider *ecs_provider =
         aws_credentials_provider_new_ecs_from_environment(downloader->allocator, &ecs_options);
 
-    // 6. IMDS provider (EC2 instance metadata)
+    // 10. IMDS provider (EC2 instance metadata)
     struct aws_credentials_provider_imds_options imds_options = {
         .shutdown_options = {0},
         .bootstrap = downloader->client_bootstrap,
@@ -144,6 +153,7 @@ int s3_client_init(struct burst_downloader *downloader) {
     struct aws_credentials_provider *all_providers[] = {
         env_provider,
         sso_provider,
+        process_provider,
         profile_provider,
         web_identity_provider,
         ecs_provider,
@@ -151,7 +161,7 @@ int s3_client_init(struct burst_downloader *downloader) {
     };
 
     // Count non-NULL providers and build filtered array
-    struct aws_credentials_provider *providers[6];
+    struct aws_credentials_provider *providers[7];
     size_t provider_count = 0;
     for (size_t i = 0; i < sizeof(all_providers) / sizeof(all_providers[0]); i++) {
         if (all_providers[i] != NULL) {
@@ -177,6 +187,7 @@ int s3_client_init(struct burst_downloader *downloader) {
     // Only release non-NULL providers
     if (env_provider) aws_credentials_provider_release(env_provider);
     if (sso_provider) aws_credentials_provider_release(sso_provider);
+    if (process_provider) aws_credentials_provider_release(process_provider);
     if (profile_provider) aws_credentials_provider_release(profile_provider);
     if (web_identity_provider) aws_credentials_provider_release(web_identity_provider);
     if (ecs_provider) aws_credentials_provider_release(ecs_provider);
