@@ -54,25 +54,11 @@ struct alignment_decision alignment_decide(
         return decision;
     }
 
-    // Case 3: Special case - frame fits but data descriptor would cross boundary
-    // This happens with files slightly larger than 8 MiB
-    if (at_file_end && space_until_boundary >= frame_size + BURST_MIN_SKIPPABLE_FRAME_SIZE) {
-        // Frame fits before boundary, but descriptor needs to go after
-        decision.action = ALIGNMENT_WRITE_FRAME;
-        decision.descriptor_after_boundary = true;
-        return decision;
-    }
-
-    // Case 4: Doesn't fit - need padding to reach boundary
+    // Case 3: Doesn't fit - need padding to reach boundary
     decision.padding_size = (size_t)(space_until_boundary - 8);  // 8-byte header
 
-    if (at_file_end) {
-        // At file boundary - next file header will start at boundary
-        decision.action = ALIGNMENT_PAD_THEN_FRAME;
-    } else {
-        // Mid-file - need Start-of-Part metadata at boundary
-        decision.action = ALIGNMENT_PAD_THEN_METADATA;
-    }
+    // Mid-file - need Start-of-Part metadata at boundary
+    decision.action = ALIGNMENT_PAD_THEN_METADATA;
 
     return decision;
 }

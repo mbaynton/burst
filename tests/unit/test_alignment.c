@@ -41,14 +41,14 @@ void test_frame_fits_comfortably(void) {
 
 // Test 3: Frame doesn't fit, at EOF
 void test_frame_doesnt_fit_at_eof(void) {
-    // Frame + descriptor exceeds space to boundary
+    // Frame fits space, but frame + descriptor exceeds space to boundary
     uint64_t current_offset = 8388608 - 100;  // 100 bytes before boundary
-    size_t frame_size = 200;  // Way too big
+    size_t frame_size = 100 - BURST_MIN_SKIPPABLE_FRAME_SIZE - sizeof(struct zip_data_descriptor) + 1; // Just over fit
 
     struct alignment_decision decision = alignment_decide(
         current_offset, frame_size, true);
 
-    TEST_ASSERT_EQUAL(ALIGNMENT_PAD_THEN_FRAME, decision.action);
+    TEST_ASSERT_EQUAL(ALIGNMENT_PAD_THEN_METADATA, decision.action);
     TEST_ASSERT_EQUAL(100 - 8, decision.padding_size);  // Space minus header
     TEST_ASSERT_FALSE(decision.descriptor_after_boundary);
 }
@@ -64,20 +64,6 @@ void test_frame_doesnt_fit_mid_file(void) {
 
     TEST_ASSERT_EQUAL(ALIGNMENT_PAD_THEN_METADATA, decision.action);
     TEST_ASSERT_EQUAL(100 - 8, decision.padding_size);
-}
-
-// Test 4b: Data descriptor doesn't fit (critical edge case)
-void test_descriptor_doesnt_fit(void) {
-    // Frame fits, but frame + descriptor exceeds boundary
-    uint64_t current_offset = 8388608 - 100;  // 100 bytes before boundary
-    size_t frame_size = 80;  // Frame fits (80 + 8 = 88 < 100)
-                              // But frame + descriptor doesn't (80 + 16 = 96 + 8 = 104 > 100)
-
-    struct alignment_decision decision = alignment_decide(
-        current_offset, frame_size, true);
-
-    TEST_ASSERT_EQUAL(ALIGNMENT_WRITE_FRAME, decision.action);
-    TEST_ASSERT_TRUE(decision.descriptor_after_boundary);  // Key assertion!
 }
 
 // Test 5: Boundary calculation
@@ -212,7 +198,6 @@ int main(void) {
     RUN_TEST(test_frame_fits_comfortably);
     RUN_TEST(test_frame_doesnt_fit_at_eof);
     RUN_TEST(test_frame_doesnt_fit_mid_file);
-    RUN_TEST(test_descriptor_doesnt_fit);
     RUN_TEST(test_boundary_calculation);
     RUN_TEST(test_write_position_calculation);
     RUN_TEST(test_at_boundary);
