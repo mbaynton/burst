@@ -21,7 +21,7 @@ NC='\033[0m' # No Color
 
 # Determine project directories
 E2E_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-E2E_PROJECT_ROOT="$(cd "$E2E_SCRIPT_DIR/../.." && pwd)"
+E2E_PROJECT_ROOT="$(cd "$E2E_SCRIPT_DIR/../../.." && pwd)"
 E2E_BUILD_DIR="$E2E_PROJECT_ROOT/build"
 E2E_TMP_DIR="$E2E_PROJECT_ROOT/tests/tmp/e2e_test_files"
 
