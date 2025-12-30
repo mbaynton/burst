@@ -189,7 +189,7 @@ int burst_writer_add_file(struct burst_writer *writer,
     entry->last_mod_date = lfh->last_mod_date;
 
     // Write the pre-constructed local file header directly
-    if (burst_writer_write(writer, lfh, lfh_len) != 0) {
+    if (burst_writer_write(writer, lfh, lfh_len) < 0) {
         free(entry->filename);
         return -1;
     }
@@ -227,7 +227,7 @@ int burst_writer_add_file(struct burst_writer *writer,
             0x99, 0xE9, 0xD8, 0x51   // XXH64 checksum of empty data
         };
 
-        if (burst_writer_write(writer, empty_zstd_frame, sizeof(empty_zstd_frame)) != 0) {
+        if (burst_writer_write(writer, empty_zstd_frame, sizeof(empty_zstd_frame)) < 0) {
             free(input_buffer);
             free(output_buffer);
             free(entry->filename);
@@ -285,7 +285,6 @@ int burst_writer_add_file(struct burst_writer *writer,
                 free(entry->filename);
                 return -1;
             }
-            writer->padding_bytes += decision.padding_size + 8;
         } else if (decision.action == ALIGNMENT_PAD_THEN_METADATA) {
             // Write padding, then Start-of-Part metadata
             if (alignment_write_padding_frame(writer, decision.padding_size) != 0) {
@@ -294,7 +293,6 @@ int burst_writer_add_file(struct burst_writer *writer,
                 free(entry->filename);
                 return -1;
             }
-            writer->padding_bytes += decision.padding_size + 8;
 
             // Write Start-of-Part frame with current uncompressed offset
             if (alignment_write_start_of_part_frame(writer, total_uncompressed - bytes_read) != 0) {
@@ -303,11 +301,10 @@ int burst_writer_add_file(struct burst_writer *writer,
                 free(entry->filename);
                 return -1;
             }
-            writer->padding_bytes += 24;
         }
 
         // Write compressed frame
-        if (burst_writer_write(writer, output_buffer, comp_result.compressed_size) != 0) {
+        if (burst_writer_write(writer, output_buffer, comp_result.compressed_size) < 0) {
             free(input_buffer);
             free(output_buffer);
             free(entry->filename);
@@ -322,7 +319,6 @@ int burst_writer_add_file(struct burst_writer *writer,
                 free(entry->filename);
                 return -1;
             }
-            writer->padding_bytes += 24;
         }
     } // file fully written out. Caller responsible for closing.
 
@@ -375,7 +371,6 @@ int burst_writer_add_file(struct burst_writer *writer,
                 free(entry->filename);
                 return -1;
             }
-            writer->padding_bytes += padding_size + 8;
 
             // Write Start-of-Part frame at boundary indicating where data descriptor
             // and next file will begin. Use current file's final uncompressed offset.
@@ -383,7 +378,6 @@ int burst_writer_add_file(struct burst_writer *writer,
                 free(entry->filename);
                 return -1;
             }
-            writer->padding_bytes += 24;  // Start-of-Part frame size
         }
     }
 

@@ -76,11 +76,13 @@ int alignment_write_padding_frame(struct burst_writer *writer, size_t padding_si
     if (burst_writer_write(writer, &magic, sizeof(magic)) != 0) {
         return -1;
     }
+    writer->padding_bytes += sizeof(magic);
 
     // Write frame size
     if (burst_writer_write(writer, &frame_size, sizeof(frame_size)) != 0) {
         return -1;
     }
+    writer->padding_bytes += sizeof(frame_size);
 
     // Write padding (zeros)
     if (padding_size > 0) {
@@ -96,6 +98,7 @@ int alignment_write_padding_frame(struct burst_writer *writer, size_t padding_si
         if (result != 0) {
             return -1;
         }
+        writer->padding_bytes += frame_size;
     }
 
     return 0;
@@ -115,31 +118,39 @@ int alignment_write_start_of_part_frame(struct burst_writer *writer,
     uint32_t frame_size = 16;  // Fixed size for Start-of-Part frame
     uint8_t info_type = 0x01;  // Start-of-Part marker
     uint8_t reserved[7] = {0}; // Reserved bytes
+    uint64_t bytes_written = 0;
 
     // Write magic number
     if (burst_writer_write(writer, &magic, sizeof(magic)) != 0) {
         return -1;
     }
+    bytes_written += sizeof(magic);
 
     // Write frame size
     if (burst_writer_write(writer, &frame_size, sizeof(frame_size)) != 0) {
         return -1;
     }
+    bytes_written += sizeof(frame_size);
 
     // Write info type flag
     if (burst_writer_write(writer, &info_type, sizeof(info_type)) != 0) {
         return -1;
     }
+    bytes_written += sizeof(info_type);
 
     // Write uncompressed offset
     if (burst_writer_write(writer, &uncompressed_offset, sizeof(uncompressed_offset)) != 0) {
         return -1;
     }
+    bytes_written += sizeof(uncompressed_offset);
 
     // Write reserved bytes
     if (burst_writer_write(writer, reserved, sizeof(reserved)) != 0) {
         return -1;
     }
+    bytes_written += sizeof(reserved);
+
+    writer->padding_bytes += bytes_written;
 
     return 0;
 }
