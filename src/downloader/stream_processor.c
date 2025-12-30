@@ -28,7 +28,8 @@ static int handle_zstd_frame(struct part_processor_state *state,
 static int handle_data_descriptor(struct part_processor_state *state,
                                   const uint8_t *descriptor_data);
 static int open_output_file(struct part_processor_state *state,
-                            struct file_metadata *file_meta);
+                            struct file_metadata *file_meta,
+                            bool is_continuing_file);
 static int close_output_file(struct part_processor_state *state);
 static int ensure_directory_exists(const char *path);
 
@@ -432,8 +433,8 @@ static int handle_start_of_part_frame(struct part_processor_state *state,
     struct part_files *part = &state->cd_result->parts[state->part_index];
     struct file_metadata *file_meta = part->continuing_file;
 
-    // Open the file
-    int rc = open_output_file(state, file_meta);
+    // Open the file (as continuing - don't truncate existing data)
+    int rc = open_output_file(state, file_meta, true);
     if (rc != STREAM_PROC_SUCCESS) {
         return rc;
     }
@@ -473,8 +474,8 @@ static int handle_local_header(struct part_processor_state *state,
     struct part_file_entry *entry = &part->entries[state->next_entry_idx];
     struct file_metadata *file_meta = &state->cd_result->files[entry->file_index];
 
-    // Open output file
-    int rc = open_output_file(state, file_meta);
+    // Open output file (new file - truncate any existing content)
+    int rc = open_output_file(state, file_meta, false);
     if (rc != STREAM_PROC_SUCCESS) {
         return rc;
     }
@@ -536,7 +537,8 @@ static int handle_data_descriptor(struct part_processor_state *state,
 }
 
 static int open_output_file(struct part_processor_state *state,
-                            struct file_metadata *file_meta)
+                            struct file_metadata *file_meta,
+                            bool is_continuing_file)
 {
     // Close any existing file
     if (state->current_file != NULL) {
@@ -585,8 +587,14 @@ static int open_output_file(struct part_processor_state *state,
     }
 
     // Open file for writing
+    // For new files, use O_TRUNC to start fresh
+    // For continuing files, don't truncate - we're appending to existing data
+    int open_flags = O_WRONLY | O_CREAT;
+    if (!is_continuing_file) {
+        open_flags |= O_TRUNC;
+    }
     state->current_file->fd = open(state->current_file->filename,
-                                   O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                                   open_flags, 0644);
     if (state->current_file->fd < 0) {
         snprintf(state->error_message, sizeof(state->error_message),
                  "Failed to open %s: %s", state->current_file->filename, strerror(errno));
