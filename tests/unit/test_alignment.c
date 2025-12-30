@@ -22,7 +22,6 @@ void test_exact_boundary_fit(void) {
         current_offset, frame_size, true);
 
     TEST_ASSERT_EQUAL(ALIGNMENT_WRITE_FRAME, decision.action);
-    TEST_ASSERT_FALSE(decision.descriptor_after_boundary);
     TEST_ASSERT_EQUAL(8388608, decision.next_boundary);
 }
 
@@ -36,7 +35,6 @@ void test_frame_fits_comfortably(void) {
         current_offset, frame_size, true);
 
     TEST_ASSERT_EQUAL(ALIGNMENT_WRITE_FRAME, decision.action);
-    TEST_ASSERT_FALSE(decision.descriptor_after_boundary);
 }
 
 // Test 3: Frame doesn't fit, at EOF
@@ -50,7 +48,6 @@ void test_frame_doesnt_fit_at_eof(void) {
 
     TEST_ASSERT_EQUAL(ALIGNMENT_PAD_THEN_METADATA, decision.action);
     TEST_ASSERT_EQUAL(100 - 8, decision.padding_size);  // Space minus header
-    TEST_ASSERT_FALSE(decision.descriptor_after_boundary);
 }
 
 // Test 4: Frame doesn't fit, mid-file
@@ -122,7 +119,6 @@ void test_large_frame(void) {
 
     // Should fit comfortably in 8 MiB part
     TEST_ASSERT_EQUAL(ALIGNMENT_WRITE_FRAME, decision.action);
-    TEST_ASSERT_FALSE(decision.descriptor_after_boundary);
 }
 
 // Test 10: Empty file data descriptor near boundary
@@ -174,7 +170,6 @@ void test_exact_fit_mid_file_needs_metadata(void) {
 
     // Should return WRITE_FRAME_THEN_METADATA since more data follows
     TEST_ASSERT_EQUAL(ALIGNMENT_WRITE_FRAME_THEN_METADATA, decision.action);
-    TEST_ASSERT_FALSE(decision.descriptor_after_boundary);
 }
 
 // Test 14: EOF frame+descriptor fits exactly to boundary - just write frame
@@ -188,7 +183,6 @@ void test_exact_fit_eof_no_metadata(void) {
 
     // Should return WRITE_FRAME since next LFH will start at boundary
     TEST_ASSERT_EQUAL(ALIGNMENT_WRITE_FRAME, decision.action);
-    TEST_ASSERT_FALSE(decision.descriptor_after_boundary);
 }
 
 int main(void) {

@@ -19,7 +19,6 @@ struct alignment_decision {
     size_t padding_size;             // Size of padding frame payload (if needed)
     uint64_t next_boundary;          // Next 8 MiB boundary offset
     bool at_file_end;                // True if this is the last frame of file
-    bool descriptor_after_boundary;  // True if data descriptor should be written after boundary
 };
 
 // Make alignment decision before writing a frame

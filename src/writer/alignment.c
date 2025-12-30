@@ -24,7 +24,6 @@ struct alignment_decision alignment_decide(
     struct alignment_decision decision = {0};
     decision.next_boundary = alignment_next_boundary(current_offset);
     decision.at_file_end = at_file_end;
-    decision.descriptor_after_boundary = false;
 
     // Calculate space required
     size_t space_required = frame_size;
