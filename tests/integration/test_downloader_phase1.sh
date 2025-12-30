@@ -147,6 +147,7 @@ echo "Command: $DOWNLOADER -b $TEST_BUCKET -k $TEST_KEY -r $AWS_REGION -o $TEST_
 echo ""
 
 # Run downloader and capture output
+set +e  # Don't exit on error to capture output
 DOWNLOADER_OUTPUT=$("$DOWNLOADER" \
     --bucket "$TEST_BUCKET" \
     --key "$TEST_KEY" \
@@ -164,6 +165,7 @@ if [ $DOWNLOADER_EXIT_CODE -ne 0 ]; then
     echo -e "${RED}✗ FAILED: burst-downloader exited with code $DOWNLOADER_EXIT_CODE${NC}"
     exit 1
 fi
+set -e
 
 # Verify output contains expected success indicators
 if ! echo "$DOWNLOADER_OUTPUT" | grep -q "✓ Object size:"; then

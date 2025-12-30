@@ -214,14 +214,83 @@ target_link_libraries(test_central_dir_parser_integration
 add_test(NAME test_central_dir_parser_integration COMMAND test_central_dir_parser_integration)
 
 # Integration tests (shell-based)
+
 add_test(NAME test_writer_basic
          COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/test_writer_basic.sh
          WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(test_writer_basic PROPERTIES
+    LABELS "integration"
+    TIMEOUT 120)
 
 add_test(NAME test_zip_compatibility
          COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/test_zip_compatibility.sh
          WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(test_zip_compatibility PROPERTIES
+    LABELS "integration"
+    TIMEOUT 120)
 
 add_test(NAME test_zstd_compression
          COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/test_zstd_compression.sh
          WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(test_zstd_compression PROPERTIES
+    LABELS "integration"
+    TIMEOUT 120)
+
+add_test(NAME test_alignment_integration
+         COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/test_alignment_integration.sh
+         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(test_alignment_integration PROPERTIES
+    LABELS "integration"
+    TIMEOUT 180)
+
+add_test(NAME test_empty_file_alignment
+         COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/test_empty_file_alignment.sh
+         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(test_empty_file_alignment PROPERTIES
+    LABELS "integration"
+    TIMEOUT 120)
+
+add_test(NAME test_downloader_phase1
+         COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/test_downloader_phase1.sh
+         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(test_downloader_phase1 PROPERTIES
+    LABELS "integration;s3"
+    TIMEOUT 180)
+
+# End-to-end integration tests (require S3 and BTRFS)
+# These tests require:
+#   - AWS credentials configured
+#   - S3 bucket specified in .env file
+#   - BTRFS filesystem (created via loop device if needed)
+#   - sudo access (for BTRFS setup)
+#
+# To run: ctest -L e2e -V
+# To skip: ctest -E e2e
+
+add_test(NAME test_e2e_small
+         COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/e2e/test_e2e_small.sh
+         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(test_e2e_small PROPERTIES
+    LABELS "e2e;integration;s3;btrfs"
+    TIMEOUT 300)
+
+add_test(NAME test_e2e_medium
+         COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/e2e/test_e2e_medium.sh
+         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(test_e2e_medium PROPERTIES
+    LABELS "e2e;integration;s3;btrfs"
+    TIMEOUT 300)
+
+add_test(NAME test_e2e_continuing
+         COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/e2e/test_e2e_continuing.sh
+         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(test_e2e_continuing PROPERTIES
+    LABELS "e2e;integration;s3;btrfs"
+    TIMEOUT 300)
+
+add_test(NAME test_e2e_many_files
+         COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/e2e/test_e2e_many_files.sh
+         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(test_e2e_many_files PROPERTIES
+    LABELS "e2e;integration;s3;btrfs"
+    TIMEOUT 600)
