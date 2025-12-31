@@ -6,6 +6,7 @@
 #   - fixtures/small.zip   (< 8 MiB, single part)
 #   - fixtures/medium.zip  (8-16 MiB, 2 parts)
 #   - fixtures/large.zip   (~20 MiB, 3 parts)
+#   - fixtures/compressible-many-files.zip (>= 10 MiB, compressible text data)
 #
 # Each archive has a corresponding .sha256 file with checksums of all files.
 #
@@ -120,6 +121,30 @@ generate_checksums() {
     done) > "$output_file"
 }
 
+# Create test file with compressible data (random words)
+# Usage: create_compressible_file <filename> <size_in_bytes>
+create_compressible_file() {
+    local filename="$1"
+    local target_size="$2"
+    > "$filename"
+    while [ "$(stat -c%s "$filename")" -lt "$target_size" ]; do
+        shuf -n 100 /usr/share/dict/words | tr '\n' ' ' >> "$filename"
+    done
+    truncate -s "$target_size" "$filename"
+}
+
+# Generate random lowercase string
+# Usage: random_string <length>
+random_string() {
+    local length="$1"
+    tr -dc 'a-z' < /dev/urandom | head -c "$length"
+}
+
+# Generate random size between 1 KiB and 1 MiB
+random_size() {
+    echo $(( (RANDOM * 32768 + RANDOM) % (1048576 - 1024) + 1024 ))
+}
+
 # Create and upload a fixture archive
 # Usage: create_fixture <name> <num_files> <file_size_bytes>
 create_fixture() {
@@ -198,6 +223,102 @@ create_fixture() {
     echo -e "${GREEN}✓ $name fixture complete${NC}"
 }
 
+# Create compressible fixture with variable file sizes and nested directories
+# Usage: create_compressible_fixture <name> <min_archive_size_bytes>
+create_compressible_fixture() {
+    local name="$1"
+    local min_archive_size="$2"
+
+    echo ""
+    echo -e "${BLUE}--- Creating $name fixture ---${NC}"
+
+    local work_dir="$TEMP_DIR/$name"
+    local input_dir="$work_dir/input"
+    local archive_file="$work_dir/$name.zip"
+    local checksum_file="$work_dir/$name.sha256"
+
+    mkdir -p "$input_dir"
+
+    local target_uncompressed=$((min_archive_size * 3))  # Assume ~3:1 compression
+    local uncompressed_total=0
+    local file_count=0
+
+    while true; do
+        # Add files until target uncompressed size
+        echo "Creating compressible files..."
+        while [ "$uncompressed_total" -lt "$target_uncompressed" ]; do
+            local dir1=$(random_string 3)
+            local dir2=$(random_string 3)
+            local subdir="$input_dir/$dir1/$dir2"
+            mkdir -p "$subdir"
+
+            local file_size=$(random_size)
+            file_count=$((file_count + 1))
+            local filename=$(printf "file_%04d.txt" "$file_count")
+            create_compressible_file "$subdir/$filename" "$file_size"
+            uncompressed_total=$((uncompressed_total + file_size))
+        done
+
+        echo -e "${GREEN}✓${NC} Created $file_count files (~$((uncompressed_total / 1024 / 1024)) MiB uncompressed)"
+
+        # Generate checksums (saved OUTSIDE input dir)
+        echo "Generating checksums..."
+        generate_checksums "$input_dir" "$checksum_file"
+        echo -e "${GREEN}✓${NC} Generated checksum manifest"
+
+        # Create BURST archive
+        echo "Creating BURST archive..."
+        "$BURST_WRITER" -l 3 -o "$archive_file" "$input_dir"
+
+        local archive_size=$(stat -c%s "$archive_file")
+        if [ "$archive_size" -ge "$min_archive_size" ]; then
+            local part_count=$(( (archive_size + 8388607) / 8388608 ))
+            echo -e "${GREEN}✓${NC} Created archive: $archive_size bytes ($part_count parts)"
+            break
+        else
+            echo "Archive only $((archive_size / 1024 / 1024)) MiB, adding more files..."
+            rm "$archive_file" "$checksum_file"
+            target_uncompressed=$((target_uncompressed + min_archive_size / 2))
+        fi
+    done
+
+    # Verify archive with 7zz
+    echo "Verifying archive with 7zz..."
+    if ! 7zz t "$archive_file" 2>&1 | grep -q "Everything is Ok"; then
+        echo -e "${RED}✗ Archive validation failed${NC}"
+        7zz t "$archive_file"
+        return 1
+    fi
+    echo -e "${GREEN}✓${NC} Archive validation passed (7zz t)"
+
+    # Verify alignment
+    echo "Verifying alignment..."
+    if ! python3 "$SCRIPT_DIR/verify_alignment.py" "$archive_file" >/dev/null 2>&1; then
+        echo -e "${RED}✗ Alignment verification failed${NC}"
+        python3 "$SCRIPT_DIR/verify_alignment.py" "$archive_file"
+        return 1
+    fi
+    echo -e "${GREEN}✓${NC} Alignment verification passed"
+
+    # Upload archive to S3
+    echo "Uploading archive to S3..."
+    if ! aws s3 cp "$archive_file" "s3://$BURST_TEST_BUCKET/$S3_PREFIX/$name.zip" --region "$AWS_REGION" >/dev/null; then
+        echo -e "${RED}✗ Failed to upload archive${NC}"
+        return 1
+    fi
+    echo -e "${GREEN}✓${NC} Uploaded s3://$BURST_TEST_BUCKET/$S3_PREFIX/$name.zip"
+
+    # Upload checksums to S3
+    echo "Uploading checksums to S3..."
+    if ! aws s3 cp "$checksum_file" "s3://$BURST_TEST_BUCKET/$S3_PREFIX/$name.sha256" --region "$AWS_REGION" >/dev/null; then
+        echo -e "${RED}✗ Failed to upload checksums${NC}"
+        return 1
+    fi
+    echo -e "${GREEN}✓${NC} Uploaded s3://$BURST_TEST_BUCKET/$S3_PREFIX/$name.sha256"
+
+    echo -e "${GREEN}✓ $name fixture complete${NC}"
+}
+
 # Main execution
 if ! check_prerequisites; then
     exit 1
@@ -227,6 +348,9 @@ create_fixture "medium" 25 $((500 * 1024))
 # large: ~20 MiB (3 parts) - 40 files x 500 KiB = 20 MiB
 create_fixture "large" 40 $((500 * 1024))
 
+# compressible-many-files: many small files with compressible text data, min 10 MiB archive
+create_compressible_fixture "compressible-many-files" $((10 * 1024 * 1024))
+
 # Print summary
 echo ""
 echo -e "${BLUE}============================================${NC}"
@@ -240,6 +364,8 @@ echo "  s3://$BURST_TEST_BUCKET/$S3_PREFIX/medium.zip"
 echo "  s3://$BURST_TEST_BUCKET/$S3_PREFIX/medium.sha256"
 echo "  s3://$BURST_TEST_BUCKET/$S3_PREFIX/large.zip"
 echo "  s3://$BURST_TEST_BUCKET/$S3_PREFIX/large.sha256"
+echo "  s3://$BURST_TEST_BUCKET/$S3_PREFIX/compressible-many-files.zip"
+echo "  s3://$BURST_TEST_BUCKET/$S3_PREFIX/compressible-many-files.sha256"
 echo ""
 echo "These fixtures are persistent and shared across test runs."
 echo "Re-run this script only if you need to regenerate them."
