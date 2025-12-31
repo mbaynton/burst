@@ -614,8 +614,11 @@ static int close_output_file(struct part_processor_state *state)
     }
 
     if (state->current_file->fd >= 0) {
-        // Truncate file to actual written size
-        if (ftruncate(state->current_file->fd, (off_t)state->current_file->uncompressed_offset) != 0) {
+        // Truncate file to expected final size (from central directory).
+        // This handles pre-existing files that may be larger than expected,
+        // and is safe with concurrent parts since all parts truncate to the
+        // same final size (multiple truncates to same size are idempotent).
+        if (ftruncate(state->current_file->fd, (off_t)state->current_file->expected_total_size) != 0) {
             // Log but don't fail
             fprintf(stderr, "Warning: failed to truncate %s: %s\n",
                     state->current_file->filename, strerror(errno));

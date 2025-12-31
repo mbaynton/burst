@@ -136,11 +136,24 @@ if ! upload_to_s3 "test.zip" "$S3_KEY"; then
 fi
 S3_UPLOADED="yes"
 
-# Step 5: Download and extract
+# Step 5: Create pre-existing files with larger sizes (tests ftruncate behavior)
 echo ""
-echo "Step 5: Downloading and extracting ($part_count parts, $NUM_FILES files)..."
+echo "Step 5: Creating pre-existing files (larger than archive contents)..."
 EXTRACT_DIR="$BTRFS_MOUNT_DIR/extracted_$TEST_ID"
 mkdir -p "$EXTRACT_DIR"
+
+# Create files 50% larger than originals, filled with 0xFF bytes
+# These must be correctly truncated and overwritten during extraction
+for i in $(seq 1 $NUM_FILES); do
+    filename="$EXTRACT_DIR/file_$(printf "%03d" "$i").bin"
+    larger_size=$(( FILE_SIZE + FILE_SIZE / 2 ))
+    dd if=/dev/zero bs=1 count="$larger_size" 2>/dev/null | tr '\0' '\377' > "$filename"
+done
+echo -e "${GREEN}✓${NC} Created $NUM_FILES pre-existing files (each 50% larger, filled with 0xFF)"
+
+# Step 6: Download and extract
+echo ""
+echo "Step 6: Downloading and extracting ($part_count parts, $NUM_FILES files)..."
 
 "$BURST_DOWNLOADER" \
     --bucket "$BURST_TEST_BUCKET" \
@@ -154,9 +167,9 @@ if [ $? -ne 0 ]; then
 fi
 echo -e "${GREEN}✓${NC} Download completed"
 
-# Step 6: Verify all files
+# Step 7: Verify all files
 echo ""
-echo "Step 6: Verifying all $NUM_FILES files..."
+echo "Step 7: Verifying all $NUM_FILES files..."
 extracted_count=$(find "$EXTRACT_DIR" -type f | wc -l)
 if [ "$extracted_count" -ne "$NUM_FILES" ]; then
     echo -e "${RED}✗ File count mismatch: expected $NUM_FILES, got $extracted_count${NC}"
@@ -169,9 +182,9 @@ if ! verify_checksums "$EXTRACT_DIR" "checksums_original.txt"; then
 fi
 echo -e "${GREEN}✓${NC} All checksums match"
 
-# Step 7: Cross-validate with 7zz
+# Step 8: Cross-validate with 7zz
 echo ""
-echo "Step 7: Cross-validation with 7zz..."
+echo "Step 8: Cross-validation with 7zz..."
 mkdir -p "7zz_extract"
 extract_with_7zz "test.zip" "7zz_extract"
 if ! verify_checksums "7zz_extract" "checksums_original.txt"; then
