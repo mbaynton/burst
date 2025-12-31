@@ -556,11 +556,6 @@ struct stream_part_context {
     struct burst_downloader *downloader;
     struct part_processor_state *processor;
 
-    // Synchronization (used only for blocking mode)
-    struct aws_mutex mutex;
-    struct aws_condition_variable condition_variable;
-    bool request_complete;
-
     // Error tracking
     int error_code;
     char error_message[256];
@@ -568,7 +563,7 @@ struct stream_part_context {
     // Meta request handle
     struct aws_s3_meta_request *meta_request;
 
-    // Coordinator reference (for async/concurrent mode)
+    // Coordinator reference
     struct download_coordinator *coordinator;
     uint32_t part_index;
 };
@@ -616,9 +611,6 @@ static struct stream_part_context *stream_part_context_new(
 
     ctx->downloader = downloader;
     ctx->processor = processor;
-    aws_mutex_init(&ctx->mutex);
-    aws_condition_variable_init(&ctx->condition_variable);
-    ctx->request_complete = false;
     ctx->error_code = 0;
     ctx->error_message[0] = '\0';
     ctx->coordinator = coordinator;
@@ -633,8 +625,6 @@ static void stream_part_context_destroy(struct stream_part_context *ctx) {
         return;
     }
 
-    aws_condition_variable_clean_up(&ctx->condition_variable);
-    aws_mutex_clean_up(&ctx->mutex);
     aws_mem_release(ctx->downloader->allocator, ctx);
 }
 
@@ -782,140 +772,8 @@ static void s3_stream_finish_callback(
         }
 
         aws_mutex_unlock(&coord->mutex);
-    } else {
-        // Blocking mode - just signal completion
-        aws_mutex_lock(&ctx->mutex);
-        ctx->request_complete = true;
-        aws_condition_variable_notify_one(&ctx->condition_variable);
-        aws_mutex_unlock(&ctx->mutex);
     }
 }
-
-// Wait for streaming completion (with timeout)
-static bool wait_for_stream_completion(struct stream_part_context *ctx, uint64_t timeout_ns) {
-    aws_mutex_lock(&ctx->mutex);
-
-    bool success = true;
-    if (!ctx->request_complete) {
-        if (aws_condition_variable_wait_for(&ctx->condition_variable, &ctx->mutex, timeout_ns) != AWS_OP_SUCCESS) {
-            success = false;  // Timeout
-        }
-    }
-
-    aws_mutex_unlock(&ctx->mutex);
-    return success && ctx->request_complete;
-}
-
-// Stream a single 8 MiB part through the stream processor
-int burst_downloader_stream_part(
-    struct burst_downloader *downloader,
-    uint32_t part_index,
-    struct part_processor_state *processor
-) {
-    if (!downloader || !downloader->s3_client || !processor) {
-        fprintf(stderr, "Error: Invalid parameters\n");
-        return -1;
-    }
-
-    // Calculate byte range for this part
-    uint64_t start = (uint64_t)part_index * PART_SIZE;
-    uint64_t end = start + PART_SIZE - 1;
-
-    // Create stream context (NULL coordinator for blocking mode)
-    struct stream_part_context *ctx = stream_part_context_new(downloader, processor, NULL, part_index);
-    if (!ctx) {
-        fprintf(stderr, "Error: Failed to allocate stream context\n");
-        return -1;
-    }
-
-    // Build HTTP message for GET request
-    struct aws_http_message *message = aws_http_message_new_request(downloader->allocator);
-    if (!message) {
-        fprintf(stderr, "Error: Failed to create HTTP message\n");
-        stream_part_context_destroy(ctx);
-        return -1;
-    }
-
-    // Set method to GET
-    aws_http_message_set_request_method(message, aws_http_method_get);
-
-    // Set path: /KEY
-    struct aws_byte_buf path_buf;
-    aws_byte_buf_init(&path_buf, downloader->allocator, strlen(downloader->key) + 2);
-    aws_byte_buf_append_byte_dynamic(&path_buf, '/');
-    struct aws_byte_cursor key_cursor = aws_byte_cursor_from_c_str(downloader->key);
-    aws_byte_buf_append_dynamic(&path_buf, &key_cursor);
-    struct aws_byte_cursor path_cursor = aws_byte_cursor_from_buf(&path_buf);
-    aws_http_message_set_request_path(message, path_cursor);
-
-    // Set Host header: BUCKET.s3.REGION.amazonaws.com
-    char host_value[256];
-    snprintf(host_value, sizeof(host_value), "%s.s3.%s.amazonaws.com",
-             downloader->bucket, downloader->region);
-    struct aws_http_header host_header = {
-        .name = aws_byte_cursor_from_c_str("Host"),
-        .value = aws_byte_cursor_from_c_str(host_value),
-    };
-    aws_http_message_add_header(message, host_header);
-
-    // Set Range header: bytes=START-END
-    char range_value[128];
-    snprintf(range_value, sizeof(range_value), "bytes=%llu-%llu",
-             (unsigned long long)start, (unsigned long long)end);
-    struct aws_http_header range_header = {
-        .name = aws_byte_cursor_from_c_str("Range"),
-        .value = aws_byte_cursor_from_c_str(range_value),
-    };
-    aws_http_message_add_header(message, range_header);
-
-    // Create meta request options for GET with streaming callbacks
-    struct aws_s3_meta_request_options request_options = {
-        .type = AWS_S3_META_REQUEST_TYPE_GET_OBJECT,
-        .message = message,
-        .user_data = ctx,
-        .headers_callback = s3_stream_headers_callback,
-        .body_callback = s3_stream_body_callback,
-        .finish_callback = s3_stream_finish_callback,
-    };
-
-    // Make the request
-    ctx->meta_request = aws_s3_client_make_meta_request(downloader->s3_client, &request_options);
-    aws_http_message_release(message);
-    aws_byte_buf_clean_up(&path_buf);
-
-    if (!ctx->meta_request) {
-        fprintf(stderr, "Error: Failed to create meta request: %s\n",
-                aws_error_debug_str(aws_last_error()));
-        stream_part_context_destroy(ctx);
-        return -1;
-    }
-
-    // Wait for completion (120 second timeout for 8 MiB part)
-    uint64_t timeout_ns = 120ULL * 1000 * 1000 * 1000;
-    if (!wait_for_stream_completion(ctx, timeout_ns)) {
-        fprintf(stderr, "Error: Stream request timed out\n");
-        aws_s3_meta_request_release(ctx->meta_request);
-        stream_part_context_destroy(ctx);
-        return -1;
-    }
-
-    // Check for errors
-    int result = 0;
-    if (ctx->error_code != 0) {
-        fprintf(stderr, "Error: %s\n", ctx->error_message);
-        result = ctx->error_code;
-    }
-
-    // Clean up
-    aws_s3_meta_request_release(ctx->meta_request);
-    stream_part_context_destroy(ctx);
-
-    return result;
-}
-
-// ============================================================================
-// Concurrent Part Download
-// ============================================================================
 
 // Start async download for a single part (helper for coordinator)
 static int start_part_download_async(

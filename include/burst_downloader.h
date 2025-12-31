@@ -83,21 +83,6 @@ int burst_downloader_fetch_cd_part(
     uint64_t *out_total_size
 );
 
-/**
- * Stream a single 8 MiB part through the stream processor.
- * Downloads the part using range GET and feeds chunks directly to the processor.
- *
- * @param downloader  Initialized downloader
- * @param part_index  Index of the part to download (0-based)
- * @param processor   Initialized stream processor for this part
- * @return 0 on success, non-zero on error
- */
-int burst_downloader_stream_part(
-    struct burst_downloader *downloader,
-    uint32_t part_index,
-    struct part_processor_state *processor
-);
-
 // Forward declaration for central directory parse result
 struct central_dir_parse_result;
 
