@@ -1,6 +1,7 @@
 #include "burst_downloader.h"
 #include "s3_client.h"
 #include "stream_processor.h"
+#include "central_dir_parser.h"
 
 #include <aws/common/byte_buf.h>
 #include <aws/common/condition_variable.h>
@@ -547,12 +548,15 @@ int burst_downloader_fetch_cd_part(
 // Streaming Part Download
 // ============================================================================
 
+// Forward declaration
+struct download_coordinator;
+
 // Context structure for streaming downloads
 struct stream_part_context {
     struct burst_downloader *downloader;
     struct part_processor_state *processor;
 
-    // Synchronization
+    // Synchronization (used only for blocking mode)
     struct aws_mutex mutex;
     struct aws_condition_variable condition_variable;
     bool request_complete;
@@ -563,12 +567,45 @@ struct stream_part_context {
 
     // Meta request handle
     struct aws_s3_meta_request *meta_request;
+
+    // Coordinator reference (for async/concurrent mode)
+    struct download_coordinator *coordinator;
+    uint32_t part_index;
+};
+
+// Coordinator for concurrent part downloads
+struct download_coordinator {
+    struct aws_mutex mutex;
+    struct aws_condition_variable cv;
+
+    // Concurrency control
+    size_t max_concurrent;
+    size_t parts_in_flight;
+    size_t next_part_to_start;
+    size_t total_parts;
+
+    // Completion tracking
+    size_t parts_completed;
+
+    // Error handling (fail-fast)
+    bool cancel_requested;
+    int first_error_code;
+    char first_error_message[256];
+
+    // Shared references
+    struct burst_downloader *downloader;
+    struct central_dir_parse_result *cd_result;
+
+    // Per-part contexts (array of size total_parts)
+    struct stream_part_context **part_contexts;
 };
 
 // Initialize stream context
 static struct stream_part_context *stream_part_context_new(
     struct burst_downloader *downloader,
-    struct part_processor_state *processor
+    struct part_processor_state *processor,
+    struct download_coordinator *coordinator,
+    uint32_t part_index
 ) {
     struct stream_part_context *ctx =
         aws_mem_calloc(downloader->allocator, 1, sizeof(struct stream_part_context));
@@ -584,6 +621,8 @@ static struct stream_part_context *stream_part_context_new(
     ctx->request_complete = false;
     ctx->error_code = 0;
     ctx->error_message[0] = '\0';
+    ctx->coordinator = coordinator;
+    ctx->part_index = part_index;
 
     return ctx;
 }
@@ -645,7 +684,13 @@ static int s3_stream_headers_callback(
     return AWS_OP_SUCCESS;
 }
 
-// Streaming finish callback
+// Forward declaration for starting next part
+static int start_part_download_async(
+    struct download_coordinator *coord,
+    uint32_t part_index
+);
+
+// Streaming finish callback - handles both blocking and coordinator modes
 static void s3_stream_finish_callback(
     struct aws_s3_meta_request *meta_request,
     const struct aws_s3_meta_request_result *result,
@@ -654,18 +699,96 @@ static void s3_stream_finish_callback(
     (void)meta_request;
 
     struct stream_part_context *ctx = user_data;
+    struct download_coordinator *coord = ctx->coordinator;
 
-    aws_mutex_lock(&ctx->mutex);
-
+    // Record error in context
     if (result->error_code != AWS_ERROR_SUCCESS && ctx->error_code == 0) {
         ctx->error_code = result->error_code;
         snprintf(ctx->error_message, sizeof(ctx->error_message),
                 "S3 request failed: %s", aws_error_debug_str(result->error_code));
     }
 
-    ctx->request_complete = true;
-    aws_condition_variable_notify_one(&ctx->condition_variable);
-    aws_mutex_unlock(&ctx->mutex);
+    // Finalize the processor for this part (if no error)
+    if (ctx->error_code == 0 && ctx->processor) {
+        int finalize_rc = part_processor_finalize(ctx->processor);
+        if (finalize_rc != STREAM_PROC_SUCCESS) {
+            ctx->error_code = finalize_rc;
+            snprintf(ctx->error_message, sizeof(ctx->error_message),
+                    "Failed to finalize part %u: %s",
+                    ctx->part_index, part_processor_get_error(ctx->processor));
+        }
+    }
+
+    // If using coordinator (async mode), coordinate with other parts
+    if (coord) {
+        aws_mutex_lock(&coord->mutex);
+
+        coord->parts_in_flight--;
+
+        // Check for errors and implement fail-fast
+        if (ctx->error_code != 0) {
+            if (!coord->cancel_requested) {
+                // First error - trigger fail-fast
+                coord->cancel_requested = true;
+                coord->first_error_code = ctx->error_code;
+                strncpy(coord->first_error_message, ctx->error_message,
+                        sizeof(coord->first_error_message) - 1);
+                coord->first_error_message[sizeof(coord->first_error_message) - 1] = '\0';
+
+                // Cancel other in-flight requests
+                for (size_t i = 0; i < coord->total_parts; i++) {
+                    if (coord->part_contexts[i] &&
+                        coord->part_contexts[i] != ctx &&
+                        coord->part_contexts[i]->meta_request) {
+                        aws_s3_meta_request_cancel(coord->part_contexts[i]->meta_request);
+                    }
+                }
+            }
+        } else {
+            coord->parts_completed++;
+        }
+
+        // Start next part if available and not cancelled
+        // Note: We process parts 0 to num_parts-2, final part comes from CD buffer
+        if (!coord->cancel_requested &&
+            coord->next_part_to_start + 1 < coord->total_parts) {
+            uint32_t next = (uint32_t)coord->next_part_to_start++;
+            coord->parts_in_flight++;
+            aws_mutex_unlock(&coord->mutex);
+
+            // Start download for next part (outside mutex)
+            if (start_part_download_async(coord, next) != 0) {
+                // Failed to start - decrement in_flight and mark error
+                aws_mutex_lock(&coord->mutex);
+                coord->parts_in_flight--;
+                if (!coord->cancel_requested) {
+                    coord->cancel_requested = true;
+                    coord->first_error_code = -1;
+                    snprintf(coord->first_error_message, sizeof(coord->first_error_message),
+                             "Failed to start part %u download", next);
+                }
+                // Signal if all done
+                if (coord->parts_in_flight == 0) {
+                    aws_condition_variable_notify_one(&coord->cv);
+                }
+                aws_mutex_unlock(&coord->mutex);
+            }
+            return;
+        }
+
+        // Signal if all parts done
+        if (coord->parts_in_flight == 0) {
+            aws_condition_variable_notify_one(&coord->cv);
+        }
+
+        aws_mutex_unlock(&coord->mutex);
+    } else {
+        // Blocking mode - just signal completion
+        aws_mutex_lock(&ctx->mutex);
+        ctx->request_complete = true;
+        aws_condition_variable_notify_one(&ctx->condition_variable);
+        aws_mutex_unlock(&ctx->mutex);
+    }
 }
 
 // Wait for streaming completion (with timeout)
@@ -698,8 +821,8 @@ int burst_downloader_stream_part(
     uint64_t start = (uint64_t)part_index * PART_SIZE;
     uint64_t end = start + PART_SIZE - 1;
 
-    // Create stream context
-    struct stream_part_context *ctx = stream_part_context_new(downloader, processor);
+    // Create stream context (NULL coordinator for blocking mode)
+    struct stream_part_context *ctx = stream_part_context_new(downloader, processor, NULL, part_index);
     if (!ctx) {
         fprintf(stderr, "Error: Failed to allocate stream context\n");
         return -1;
@@ -786,6 +909,281 @@ int burst_downloader_stream_part(
     // Clean up
     aws_s3_meta_request_release(ctx->meta_request);
     stream_part_context_destroy(ctx);
+
+    return result;
+}
+
+// ============================================================================
+// Concurrent Part Download
+// ============================================================================
+
+// Start async download for a single part (helper for coordinator)
+static int start_part_download_async(
+    struct download_coordinator *coord,
+    uint32_t part_index
+) {
+    struct burst_downloader *downloader = coord->downloader;
+
+    // Create processor for this part
+    struct part_processor_state *processor =
+        part_processor_create(part_index, coord->cd_result, downloader->output_dir);
+    if (!processor) {
+        fprintf(stderr, "Error: Failed to create processor for part %u\n", part_index);
+        return -1;
+    }
+
+    // Create stream context with coordinator reference
+    struct stream_part_context *ctx =
+        stream_part_context_new(downloader, processor, coord, part_index);
+    if (!ctx) {
+        fprintf(stderr, "Error: Failed to allocate stream context for part %u\n", part_index);
+        part_processor_destroy(processor);
+        return -1;
+    }
+
+    // Store context in coordinator
+    coord->part_contexts[part_index] = ctx;
+
+    // Calculate byte range for this part
+    uint64_t start = (uint64_t)part_index * PART_SIZE;
+    uint64_t end = start + PART_SIZE - 1;
+
+    // Build HTTP message for GET request
+    struct aws_http_message *message = aws_http_message_new_request(downloader->allocator);
+    if (!message) {
+        fprintf(stderr, "Error: Failed to create HTTP message for part %u\n", part_index);
+        coord->part_contexts[part_index] = NULL;
+        part_processor_destroy(processor);
+        stream_part_context_destroy(ctx);
+        return -1;
+    }
+
+    // Set method to GET
+    aws_http_message_set_request_method(message, aws_http_method_get);
+
+    // Set path: /KEY
+    struct aws_byte_buf path_buf;
+    aws_byte_buf_init(&path_buf, downloader->allocator, strlen(downloader->key) + 2);
+    aws_byte_buf_append_byte_dynamic(&path_buf, '/');
+    struct aws_byte_cursor key_cursor = aws_byte_cursor_from_c_str(downloader->key);
+    aws_byte_buf_append_dynamic(&path_buf, &key_cursor);
+    struct aws_byte_cursor path_cursor = aws_byte_cursor_from_buf(&path_buf);
+    aws_http_message_set_request_path(message, path_cursor);
+
+    // Set Host header
+    char host_value[256];
+    snprintf(host_value, sizeof(host_value), "%s.s3.%s.amazonaws.com",
+             downloader->bucket, downloader->region);
+    struct aws_http_header host_header = {
+        .name = aws_byte_cursor_from_c_str("Host"),
+        .value = aws_byte_cursor_from_c_str(host_value),
+    };
+    aws_http_message_add_header(message, host_header);
+
+    // Set Range header
+    char range_value[128];
+    snprintf(range_value, sizeof(range_value), "bytes=%llu-%llu",
+             (unsigned long long)start, (unsigned long long)end);
+    struct aws_http_header range_header = {
+        .name = aws_byte_cursor_from_c_str("Range"),
+        .value = aws_byte_cursor_from_c_str(range_value),
+    };
+    aws_http_message_add_header(message, range_header);
+
+    // Create meta request options
+    struct aws_s3_meta_request_options request_options = {
+        .type = AWS_S3_META_REQUEST_TYPE_GET_OBJECT,
+        .message = message,
+        .user_data = ctx,
+        .headers_callback = s3_stream_headers_callback,
+        .body_callback = s3_stream_body_callback,
+        .finish_callback = s3_stream_finish_callback,
+    };
+
+    // Make the request (returns immediately)
+    ctx->meta_request = aws_s3_client_make_meta_request(downloader->s3_client, &request_options);
+    aws_http_message_release(message);
+    aws_byte_buf_clean_up(&path_buf);
+
+    if (!ctx->meta_request) {
+        fprintf(stderr, "Error: Failed to create meta request for part %u: %s\n",
+                part_index, aws_error_debug_str(aws_last_error()));
+        coord->part_contexts[part_index] = NULL;
+        part_processor_destroy(processor);
+        stream_part_context_destroy(ctx);
+        return -1;
+    }
+
+    return 0;
+}
+
+// Extract BURST archive using concurrent part downloads
+int burst_downloader_extract_concurrent(
+    struct burst_downloader *downloader,
+    struct central_dir_parse_result *cd_result,
+    uint8_t *cd_buffer,
+    size_t cd_size,
+    uint64_t cd_start
+) {
+    if (!downloader || !cd_result || !cd_buffer) {
+        fprintf(stderr, "Error: Invalid parameters for concurrent extraction\n");
+        return -1;
+    }
+
+    size_t num_parts = cd_result->num_parts;
+
+    // Handle single-part archives (no concurrency needed)
+    if (num_parts <= 1) {
+        // Just process from CD buffer
+        if (num_parts == 1) {
+            printf("Processing single part from buffer...\n");
+            struct part_processor_state *processor =
+                part_processor_create(0, cd_result, downloader->output_dir);
+            if (!processor) {
+                fprintf(stderr, "Failed to create processor for single part\n");
+                return -1;
+            }
+
+            uint64_t data_end = cd_result->central_dir_offset;
+            if (data_end > 0) {
+                int proc_rc = part_processor_process_data(processor, cd_buffer, data_end);
+                if (proc_rc != STREAM_PROC_SUCCESS) {
+                    fprintf(stderr, "Failed to process single part: %s\n",
+                            part_processor_get_error(processor));
+                    part_processor_destroy(processor);
+                    return -1;
+                }
+            }
+
+            int finalize_rc = part_processor_finalize(processor);
+            part_processor_destroy(processor);
+            return finalize_rc == STREAM_PROC_SUCCESS ? 0 : -1;
+        }
+        return 0;
+    }
+
+    // Initialize coordinator
+    struct download_coordinator coord = {
+        .max_concurrent = downloader->max_concurrent_parts,
+        .total_parts = num_parts,
+        .parts_in_flight = 0,
+        .next_part_to_start = 0,
+        .parts_completed = 0,
+        .cancel_requested = false,
+        .first_error_code = 0,
+        .downloader = downloader,
+        .cd_result = cd_result,
+    };
+    coord.first_error_message[0] = '\0';
+
+    aws_mutex_init(&coord.mutex);
+    aws_condition_variable_init(&coord.cv);
+
+    // Allocate part context array
+    coord.part_contexts = aws_mem_calloc(
+        downloader->allocator, num_parts, sizeof(struct stream_part_context *));
+    if (!coord.part_contexts) {
+        fprintf(stderr, "Error: Failed to allocate part context array\n");
+        aws_mutex_clean_up(&coord.mutex);
+        aws_condition_variable_clean_up(&coord.cv);
+        return -1;
+    }
+
+    // Calculate how many parts to download (all except final)
+    size_t parts_to_download = num_parts - 1;
+
+    // Start initial batch (up to max_concurrent, but not more than parts_to_download)
+    aws_mutex_lock(&coord.mutex);
+    while (coord.parts_in_flight < coord.max_concurrent &&
+           coord.next_part_to_start < parts_to_download) {
+        uint32_t part_idx = (uint32_t)coord.next_part_to_start++;
+        coord.parts_in_flight++;
+
+        aws_mutex_unlock(&coord.mutex);
+
+        printf("Starting part %u/%zu...\n", part_idx + 1, num_parts);
+        if (start_part_download_async(&coord, part_idx) != 0) {
+            aws_mutex_lock(&coord.mutex);
+            coord.parts_in_flight--;
+            coord.cancel_requested = true;
+            coord.first_error_code = -1;
+            snprintf(coord.first_error_message, sizeof(coord.first_error_message),
+                     "Failed to start part %u download", part_idx);
+            break;
+        }
+
+        aws_mutex_lock(&coord.mutex);
+    }
+
+    // Wait for all parts to complete
+    while (coord.parts_in_flight > 0) {
+        aws_condition_variable_wait(&coord.cv, &coord.mutex);
+    }
+    aws_mutex_unlock(&coord.mutex);
+
+    // Check for errors
+    int result = coord.first_error_code;
+    if (result != 0) {
+        fprintf(stderr, "Error during concurrent download: %s\n", coord.first_error_message);
+    }
+
+    // Process final part from CD buffer (if no errors)
+    if (result == 0 && num_parts > 0) {
+        uint32_t final_idx = (uint32_t)(num_parts - 1);
+        printf("Processing final part %u/%zu from buffer...\n", final_idx + 1, num_parts);
+
+        struct part_processor_state *processor =
+            part_processor_create(final_idx, cd_result, downloader->output_dir);
+        if (!processor) {
+            fprintf(stderr, "Failed to create processor for final part\n");
+            result = -1;
+        } else {
+            uint64_t final_part_start = (uint64_t)final_idx * PART_SIZE;
+            uint64_t data_end = cd_result->central_dir_offset;
+
+            if (data_end > final_part_start) {
+                size_t offset_in_buffer = final_part_start - cd_start;
+                size_t data_size = data_end - final_part_start;
+
+                int proc_rc = part_processor_process_data(
+                    processor, cd_buffer + offset_in_buffer, data_size);
+                if (proc_rc != STREAM_PROC_SUCCESS) {
+                    fprintf(stderr, "Failed to process final part: %s\n",
+                            part_processor_get_error(processor));
+                    result = -1;
+                }
+            }
+
+            if (result == 0) {
+                int finalize_rc = part_processor_finalize(processor);
+                if (finalize_rc != STREAM_PROC_SUCCESS) {
+                    fprintf(stderr, "Failed to finalize final part: %s\n",
+                            part_processor_get_error(processor));
+                    result = -1;
+                }
+            }
+
+            part_processor_destroy(processor);
+        }
+    }
+
+    // Cleanup: destroy all part contexts
+    for (size_t i = 0; i < num_parts; i++) {
+        if (coord.part_contexts[i]) {
+            // Release meta request if still held
+            if (coord.part_contexts[i]->meta_request) {
+                aws_s3_meta_request_release(coord.part_contexts[i]->meta_request);
+            }
+            // Destroy processor if still held
+            if (coord.part_contexts[i]->processor) {
+                part_processor_destroy(coord.part_contexts[i]->processor);
+            }
+            stream_part_context_destroy(coord.part_contexts[i]);
+        }
+    }
+    aws_mem_release(downloader->allocator, coord.part_contexts);
+    aws_mutex_clean_up(&coord.mutex);
+    aws_condition_variable_clean_up(&coord.cv);
 
     return result;
 }

@@ -23,6 +23,7 @@ struct burst_downloader {
 
     // Configuration
     size_t max_concurrent_connections;
+    size_t max_concurrent_parts;  // Max concurrent part downloads (default: 8)
     char *output_dir;
     char *profile_name;  // AWS profile name for SSO and credentials
 };
@@ -34,6 +35,7 @@ struct burst_downloader *burst_downloader_create(
     const char *region,
     const char *output_dir,
     size_t max_connections,
+    size_t max_concurrent_parts,  // Max concurrent part downloads (1-16, default: 8)
     const char *profile_name  // Can be NULL
 );
 void burst_downloader_destroy(struct burst_downloader *downloader);
@@ -94,6 +96,29 @@ int burst_downloader_stream_part(
     struct burst_downloader *downloader,
     uint32_t part_index,
     struct part_processor_state *processor
+);
+
+// Forward declaration for central directory parse result
+struct central_dir_parse_result;
+
+/**
+ * Extract BURST archive using concurrent part downloads.
+ * Downloads multiple 8 MiB parts concurrently using AWS SDK's async model.
+ * Uses max_concurrent_parts from downloader config (default: 8).
+ *
+ * @param downloader  Initialized downloader
+ * @param cd_result   Parsed central directory
+ * @param cd_buffer   Buffer containing central directory data
+ * @param cd_size     Size of cd_buffer
+ * @param cd_start    Archive offset where cd_buffer starts
+ * @return 0 on success, non-zero on error
+ */
+int burst_downloader_extract_concurrent(
+    struct burst_downloader *downloader,
+    struct central_dir_parse_result *cd_result,
+    uint8_t *cd_buffer,
+    size_t cd_size,
+    uint64_t cd_start
 );
 
 #endif // BURST_DOWNLOADER_H

@@ -207,6 +207,9 @@ for known inputs (byte streams, parsed central directories) using unit tests and
 - Update existing e2e tests to use writer's uploader instead of aws CLI for upload
 
 **Phase 8: Optimization and Cleanup** (2 days)
+- Begin creating release artifacts on GitHub for various architectures
+- Investigate whether better performance can be achieved by downloading larger parts (e.g., 16 MiB).
+- Verify that when archives are slightly larger than 8MiB, the range requests do not overlap leading to downloading most of the data twice.
 - Investigate whether our s3_client_config is always optimal for any ec2 instance type,
   or whether we should support tuning based on the s3-platform_info facility in aws-c-s3.
 - Compare central directory offset and crc32 data with the local file header data as an integrity check.

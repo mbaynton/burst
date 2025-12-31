@@ -20,6 +20,8 @@ static void print_usage(const char *program_name) {
     printf("  -o, --output-dir DIR      Output directory for extracted files\n");
     printf("\nOptional:\n");
     printf("  -c, --connections NUM     Max concurrent connections (default: 16)\n");
+    printf("  -n, --max-concurrent-parts NUM\n");
+    printf("                            Max concurrent part downloads (1-16, default: 8)\n");
     printf("  -p, --profile PROFILE     AWS profile name (default: AWS_PROFILE env or 'default')\n");
     printf("  -h, --help                Show this help message\n");
     printf("\nAWS Credentials:\n");
@@ -37,6 +39,7 @@ struct burst_downloader *burst_downloader_create(
     const char *region,
     const char *output_dir,
     size_t max_connections,
+    size_t max_concurrent_parts,
     const char *profile_name
 ) {
     if (!bucket || !key || !region || !output_dir) {
@@ -57,6 +60,7 @@ struct burst_downloader *burst_downloader_create(
     downloader->output_dir = strdup(output_dir);
     downloader->profile_name = profile_name ? strdup(profile_name) : NULL;
     downloader->max_concurrent_connections = max_connections;
+    downloader->max_concurrent_parts = max_concurrent_parts;
     downloader->object_size = 0;
     downloader->tls_ctx = NULL;
 
@@ -127,80 +131,14 @@ int burst_downloader_extract(struct burst_downloader *downloader) {
     }
     printf("Found %zu files in %zu parts\n", cd_result.num_files, cd_result.num_parts);
 
-    // 3. Process parts 0 to num_parts-2 (all except final part)
-    for (uint32_t part_idx = 0; part_idx + 1 < cd_result.num_parts; part_idx++) {
-        printf("Processing part %u/%zu...\n", part_idx + 1, cd_result.num_parts);
+    // 3. Extract using concurrent part downloads
+    printf("Extracting with up to %zu concurrent parts...\n", downloader->max_concurrent_parts);
+    result = burst_downloader_extract_concurrent(
+        downloader, &cd_result, cd_buffer, cd_size, cd_start);
 
-        struct part_processor_state *processor =
-            part_processor_create(part_idx, &cd_result, downloader->output_dir);
-        if (!processor) {
-            fprintf(stderr, "Failed to create processor for part %u\n", part_idx);
-            goto cleanup;
-        }
-
-        int stream_rc = burst_downloader_stream_part(downloader, part_idx, processor);
-        if (stream_rc != 0) {
-            fprintf(stderr, "Failed to stream part %u: %s\n",
-                    part_idx, part_processor_get_error(processor));
-            part_processor_destroy(processor);
-            goto cleanup;
-        }
-
-        int finalize_rc = part_processor_finalize(processor);
-        if (finalize_rc != STREAM_PROC_SUCCESS) {
-            fprintf(stderr, "Failed to finalize part %u: %s\n",
-                    part_idx, part_processor_get_error(processor));
-            part_processor_destroy(processor);
-            goto cleanup;
-        }
-
-        part_processor_destroy(processor);
+    if (result == 0) {
+        printf("\nExtraction complete! %zu files extracted.\n", cd_result.num_files);
     }
-
-    // 4. Process final part from cd_buffer (if num_parts > 0)
-    if (cd_result.num_parts > 0) {
-        uint32_t final_idx = cd_result.num_parts - 1;
-        printf("Processing final part %u/%zu from buffer...\n",
-               final_idx + 1, cd_result.num_parts);
-
-        struct part_processor_state *processor =
-            part_processor_create(final_idx, &cd_result, downloader->output_dir);
-        if (!processor) {
-            fprintf(stderr, "Failed to create processor for final part\n");
-            goto cleanup;
-        }
-
-        // Calculate data portion of final part
-        uint64_t final_part_start = (uint64_t)final_idx * PART_SIZE;
-        uint64_t data_end = cd_result.central_dir_offset;
-
-        if (data_end > final_part_start) {
-            size_t offset_in_buffer = final_part_start - cd_start;
-            size_t data_size = data_end - final_part_start;
-
-            int proc_rc = part_processor_process_data(
-                processor, cd_buffer + offset_in_buffer, data_size);
-            if (proc_rc != STREAM_PROC_SUCCESS) {
-                fprintf(stderr, "Failed to process final part: %s\n",
-                        part_processor_get_error(processor));
-                part_processor_destroy(processor);
-                goto cleanup;
-            }
-        }
-
-        int finalize_rc = part_processor_finalize(processor);
-        if (finalize_rc != STREAM_PROC_SUCCESS) {
-            fprintf(stderr, "Failed to finalize final part: %s\n",
-                    part_processor_get_error(processor));
-            part_processor_destroy(processor);
-            goto cleanup;
-        }
-
-        part_processor_destroy(processor);
-    }
-
-    printf("\nExtraction complete! %zu files extracted.\n", cd_result.num_files);
-    result = 0;
 
 cleanup:
     central_dir_parse_result_free(&cd_result);
@@ -217,6 +155,7 @@ int main(int argc, char **argv) {
     const char *output_dir = NULL;
     const char *profile = NULL;
     size_t max_connections = 16;
+    size_t max_concurrent_parts = 8;
 
     // Parse command-line options
     static struct option long_options[] = {
@@ -225,13 +164,14 @@ int main(int argc, char **argv) {
         {"region", required_argument, 0, 'r'},
         {"output-dir", required_argument, 0, 'o'},
         {"connections", required_argument, 0, 'c'},
+        {"max-concurrent-parts", required_argument, 0, 'n'},
         {"profile", required_argument, 0, 'p'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "b:k:r:o:c:p:h", long_options, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "b:k:r:o:c:n:p:h", long_options, NULL)) != -1) {
         switch (opt) {
             case 'b':
                 bucket = optarg;
@@ -249,6 +189,13 @@ int main(int argc, char **argv) {
                 max_connections = atoi(optarg);
                 if (max_connections < 1 || max_connections > 256) {
                     fprintf(stderr, "Error: Connections must be between 1 and 256\n");
+                    return 1;
+                }
+                break;
+            case 'n':
+                max_concurrent_parts = atoi(optarg);
+                if (max_concurrent_parts < 1 || max_concurrent_parts > 16) {
+                    fprintf(stderr, "Error: Max concurrent parts must be between 1 and 16\n");
                     return 1;
                 }
                 break;
@@ -278,6 +225,7 @@ int main(int argc, char **argv) {
     printf("Region:      %s\n", region);
     printf("Output Dir:  %s\n", output_dir);
     printf("Connections: %zu\n", max_connections);
+    printf("Concurrent Parts: %zu\n", max_concurrent_parts);
     printf("\n");
 
     // Profile resolution: CLI arg > AWS_PROFILE env > NULL (defaults to "default")
@@ -288,7 +236,7 @@ int main(int argc, char **argv) {
     // Create downloader
     printf("Initializing AWS S3 client...\n");
     struct burst_downloader *downloader = burst_downloader_create(
-        bucket, key, region, output_dir, max_connections, profile
+        bucket, key, region, output_dir, max_connections, max_concurrent_parts, profile
     );
 
     if (!downloader) {
