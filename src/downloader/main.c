@@ -19,7 +19,7 @@ static void print_usage(const char *program_name) {
     printf("  -r, --region REGION       AWS region (e.g., us-east-1)\n");
     printf("  -o, --output-dir DIR      Output directory for extracted files\n");
     printf("\nOptional:\n");
-    printf("  -c, --connections NUM     Max concurrent connections (default: 16)\n");
+    printf("  -c, --connections NUM     Max concurrent connections (0=auto, max: 256)\n");
     printf("  -n, --max-concurrent-parts NUM\n");
     printf("                            Max concurrent part downloads (1-16, default: 8)\n");
     printf("  -s, --part-size NUM       Part size in MiB (8-64, must be multiple of 8,\n");
@@ -158,7 +158,7 @@ int main(int argc, char **argv) {
     const char *region = NULL;
     const char *output_dir = NULL;
     const char *profile = NULL;
-    size_t max_connections = 16;
+    size_t max_connections = 0;
     size_t max_concurrent_parts = 8;
     uint64_t part_size = 8 * 1024 * 1024;  // Default 8 MiB
 
@@ -193,8 +193,8 @@ int main(int argc, char **argv) {
                 break;
             case 'c':
                 max_connections = atoi(optarg);
-                if (max_connections < 1 || max_connections > 256) {
-                    fprintf(stderr, "Error: Connections must be between 1 and 256\n");
+                if (max_connections > 256) {
+                    fprintf(stderr, "Error: Connections must be 0-256 (0=auto)\n");
                     return 1;
                 }
                 break;
