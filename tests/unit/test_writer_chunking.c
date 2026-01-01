@@ -5,6 +5,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdint.h>
+#include <stdbool.h>
 
 // Define ZIP structures needed for testing
 #define ZIP_LOCAL_FILE_HEADER_SIG 0x04034b50
@@ -31,7 +32,8 @@ struct burst_writer;
 struct burst_writer* burst_writer_create(FILE* output, int compression_level);
 void burst_writer_destroy(struct burst_writer* writer);
 int burst_writer_add_file(struct burst_writer* writer, FILE* input_file,
-                          struct zip_local_header* lfh, int lfh_len, int next_lfh_len);
+                          struct zip_local_header* lfh, int lfh_len, int next_lfh_len,
+                          bool is_header_only);
 
 // Global call counters
 static int compress_chunk_call_count;
@@ -141,7 +143,7 @@ void test_file_exactly_128k_produces_one_chunk(void) {
     TEST_ASSERT_NOT_NULL(input);
 
     // Call with new API (next_lfh_len = 0 for single file tests)
-    int result = burst_writer_add_file(writer, input, lfh, lfh_len, 0);
+    int result = burst_writer_add_file(writer, input, lfh, lfh_len, 0, false);
 
     TEST_ASSERT_EQUAL(0, result);
     TEST_ASSERT_EQUAL(1, compress_chunk_call_count);
@@ -174,7 +176,7 @@ void test_file_128k_plus_one_produces_two_chunks(void) {
     TEST_ASSERT_NOT_NULL(input);
 
     // Call with new API (next_lfh_len = 0 for single file tests)
-    int result = burst_writer_add_file(writer, input, lfh, lfh_len, 0);
+    int result = burst_writer_add_file(writer, input, lfh, lfh_len, 0, false);
 
     TEST_ASSERT_EQUAL(0, result);
     TEST_ASSERT_EQUAL(2, compress_chunk_call_count);
@@ -207,7 +209,7 @@ void test_file_256k_produces_two_chunks(void) {
     TEST_ASSERT_NOT_NULL(input);
 
     // Call with new API (next_lfh_len = 0 for single file tests)
-    int result = burst_writer_add_file(writer, input, lfh, lfh_len, 0);
+    int result = burst_writer_add_file(writer, input, lfh, lfh_len, 0, false);
 
     TEST_ASSERT_EQUAL(0, result);
     TEST_ASSERT_EQUAL(2, compress_chunk_call_count);
@@ -239,7 +241,7 @@ void test_file_384k_minus_one_produces_three_chunks(void) {
     TEST_ASSERT_NOT_NULL(input);
 
     // Call with new API (next_lfh_len = 0 for single file tests)
-    int result = burst_writer_add_file(writer, input, lfh, lfh_len, 0);
+    int result = burst_writer_add_file(writer, input, lfh, lfh_len, 0, false);
 
     TEST_ASSERT_EQUAL(0, result);
     TEST_ASSERT_EQUAL(3, compress_chunk_call_count);
@@ -271,7 +273,7 @@ void test_chunks_never_exceed_128k(void) {
     TEST_ASSERT_NOT_NULL(input);
 
     // Call with new API (next_lfh_len = 0 for single file tests)
-    int result = burst_writer_add_file(writer, input, lfh, lfh_len, 0);
+    int result = burst_writer_add_file(writer, input, lfh, lfh_len, 0, false);
 
     TEST_ASSERT_EQUAL(0, result);
     // 200 KiB = 128 KiB + 72 KiB → 2 chunks

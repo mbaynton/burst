@@ -66,11 +66,14 @@ void burst_writer_destroy(struct burst_writer *writer);
 // lfh: Fully-constructed local file header (caller allocates)
 // lfh_len: Total size of local file header including filename and extra fields
 // next_lfh_len: Size of next file's local header, or 0 if this is the last file
+// is_header_only: True for empty files or symlinks (no compressed data frames)
+//                 When true, ensures proper alignment by inserting padding LFH if needed
 int burst_writer_add_file(struct burst_writer *writer,
                           FILE *input_file,
                           struct zip_local_header *lfh,
                           int lfh_len,
-                          int next_lfh_len);
+                          int next_lfh_len,
+                          bool is_header_only);
 int burst_writer_finalize(struct burst_writer *writer);
 
 // Internal functions

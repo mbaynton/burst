@@ -1,7 +1,9 @@
 #include "unity.h"
 #include "zip_structures.h"
+#include "burst_writer.h"
 #include <string.h>
 #include <time.h>
+#include <stdlib.h>
 
 void setUp(void) {
     // Runs before each test
@@ -94,6 +96,131 @@ void test_header_size_empty_filename(void) {
     TEST_ASSERT_EQUAL(46, central_size);
 }
 
+// Test write_padding_lfh with minimum size
+void test_write_padding_lfh_min_size(void) {
+    FILE *tmp = tmpfile();
+    TEST_ASSERT_NOT_NULL(tmp);
+
+    struct burst_writer *writer = burst_writer_create(tmp, 3);
+    TEST_ASSERT_NOT_NULL(writer);
+
+    // Write minimum size padding LFH (44 bytes)
+    int result = write_padding_lfh(writer, PADDING_LFH_MIN_SIZE);
+    TEST_ASSERT_EQUAL(0, result);
+
+    // Flush and verify size
+    burst_writer_flush(writer);
+    TEST_ASSERT_EQUAL(PADDING_LFH_MIN_SIZE, writer->current_offset);
+    TEST_ASSERT_EQUAL(PADDING_LFH_MIN_SIZE, writer->padding_bytes);
+
+    // Verify the structure by reading back
+    rewind(tmp);
+
+    struct zip_local_header header;
+    size_t read = fread(&header, 1, sizeof(header), tmp);
+    TEST_ASSERT_EQUAL(sizeof(header), read);
+
+    TEST_ASSERT_EQUAL_HEX32(ZIP_LOCAL_FILE_HEADER_SIG, header.signature);
+    TEST_ASSERT_EQUAL(ZIP_VERSION_STORE, header.version_needed);
+    TEST_ASSERT_EQUAL(0, header.flags);  // No data descriptor
+    TEST_ASSERT_EQUAL(ZIP_METHOD_STORE, header.compression_method);
+    TEST_ASSERT_EQUAL(0, header.crc32);
+    TEST_ASSERT_EQUAL(0, header.compressed_size);
+    TEST_ASSERT_EQUAL(0, header.uncompressed_size);
+    TEST_ASSERT_EQUAL(PADDING_LFH_FILENAME_LEN, header.filename_length);
+    TEST_ASSERT_EQUAL(0, header.extra_field_length);  // Min size = no extra field
+
+    // Read and verify filename
+    char filename[PADDING_LFH_FILENAME_LEN + 1];
+    read = fread(filename, 1, PADDING_LFH_FILENAME_LEN, tmp);
+    TEST_ASSERT_EQUAL(PADDING_LFH_FILENAME_LEN, read);
+    filename[PADDING_LFH_FILENAME_LEN] = '\0';
+    TEST_ASSERT_EQUAL_STRING(PADDING_LFH_FILENAME, filename);
+
+    burst_writer_destroy(writer);
+    fclose(tmp);
+}
+
+// Test write_padding_lfh with extra field
+void test_write_padding_lfh_with_extra(void) {
+    FILE *tmp = tmpfile();
+    TEST_ASSERT_NOT_NULL(tmp);
+
+    struct burst_writer *writer = burst_writer_create(tmp, 3);
+    TEST_ASSERT_NOT_NULL(writer);
+
+    // Write padding LFH with 100 extra bytes
+    size_t target_size = PADDING_LFH_MIN_SIZE + 100;
+    int result = write_padding_lfh(writer, target_size);
+    TEST_ASSERT_EQUAL(0, result);
+
+    // Flush and verify size
+    burst_writer_flush(writer);
+    TEST_ASSERT_EQUAL(target_size, writer->current_offset);
+    TEST_ASSERT_EQUAL(target_size, writer->padding_bytes);
+
+    // Verify header
+    rewind(tmp);
+
+    struct zip_local_header header;
+    fread(&header, 1, sizeof(header), tmp);
+
+    TEST_ASSERT_EQUAL_HEX32(ZIP_LOCAL_FILE_HEADER_SIG, header.signature);
+    TEST_ASSERT_EQUAL(100, header.extra_field_length);
+
+    burst_writer_destroy(writer);
+    fclose(tmp);
+}
+
+// Test write_padding_lfh rejects too small target
+void test_write_padding_lfh_too_small(void) {
+    FILE *tmp = tmpfile();
+    TEST_ASSERT_NOT_NULL(tmp);
+
+    struct burst_writer *writer = burst_writer_create(tmp, 3);
+    TEST_ASSERT_NOT_NULL(writer);
+
+    // Try to write with size smaller than minimum
+    int result = write_padding_lfh(writer, PADDING_LFH_MIN_SIZE - 1);
+    TEST_ASSERT_EQUAL(-1, result);
+
+    // Nothing should have been written
+    TEST_ASSERT_EQUAL(0, writer->buffer_used);
+    TEST_ASSERT_EQUAL(0, writer->padding_bytes);
+
+    burst_writer_destroy(writer);
+    fclose(tmp);
+}
+
+// Test write_padding_lfh with large extra field
+void test_write_padding_lfh_large_extra(void) {
+    FILE *tmp = tmpfile();
+    TEST_ASSERT_NOT_NULL(tmp);
+
+    struct burst_writer *writer = burst_writer_create(tmp, 3);
+    TEST_ASSERT_NOT_NULL(writer);
+
+    // Write padding LFH with 10000 extra bytes
+    size_t target_size = PADDING_LFH_MIN_SIZE + 10000;
+    int result = write_padding_lfh(writer, target_size);
+    TEST_ASSERT_EQUAL(0, result);
+
+    // Flush and verify size
+    burst_writer_flush(writer);
+    TEST_ASSERT_EQUAL(target_size, writer->current_offset);
+
+    // Verify header extra field length
+    rewind(tmp);
+
+    struct zip_local_header header;
+    fread(&header, 1, sizeof(header), tmp);
+
+    TEST_ASSERT_EQUAL(10000, header.extra_field_length);
+
+    burst_writer_destroy(writer);
+    fclose(tmp);
+}
+
 int main(void) {
     UNITY_BEGIN();
 
@@ -102,6 +229,10 @@ int main(void) {
     RUN_TEST(test_get_local_header_size);
     RUN_TEST(test_get_central_header_size);
     RUN_TEST(test_header_size_empty_filename);
+    RUN_TEST(test_write_padding_lfh_min_size);
+    RUN_TEST(test_write_padding_lfh_with_extra);
+    RUN_TEST(test_write_padding_lfh_too_small);
+    RUN_TEST(test_write_padding_lfh_large_extra);
 
     return UNITY_END();
 }

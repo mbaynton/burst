@@ -129,6 +129,7 @@ It may write a number of structures to the output in the process:
 - Zip Data Descriptor
 - Zstandard skippable padding frames
 - Zstandard Start-of-Part metadata frames
+- Unlisted padding Local File Header (for alignment of header-only files)
 
 It is responsible for ensuring that it does not write any type of data
 other than a Start-of-Part frame or a Local File Header at an 8MiB part boundary,
@@ -139,7 +140,8 @@ int burst_writer_add_file(struct burst_writer *writer,
                           FILE *input_file,
                           struct zip_local_header *lfh,
                           int lfh_len,
-                          int next_lfh_len) {
+                          int next_lfh_len,
+                          bool is_header_only) {
     if (!writer || !input_file || !lfh || lfh_len <= 0) {
         return -1;
     }
@@ -179,6 +181,29 @@ int burst_writer_add_file(struct burst_writer *writer,
         return -1;
     }
 
+    // For header-only files (empty files, symlinks), check if we need to insert
+    // a padding LFH before writing this file's LFH to ensure proper alignment.
+    // Header-only files have no Zstandard frames, so we can't use skippable frames
+    // for padding. Instead, we write an unlisted LFH that extractors will ignore.
+    if (is_header_only) {
+        uint64_t write_pos = alignment_get_write_position(writer);
+        uint64_t next_boundary = alignment_next_boundary(write_pos);
+        uint64_t space_until_boundary = next_boundary - write_pos;
+
+        // Space needed: current LFH + data descriptor + minimum padding LFH
+        // The data descriptor is 16 bytes (even for STORE method, for consistency)
+        const size_t data_descriptor_size = sizeof(struct zip_data_descriptor);
+        size_t space_needed = (size_t)lfh_len + data_descriptor_size + PADDING_LFH_MIN_SIZE;
+
+        if (space_until_boundary < space_needed) {
+            // Not enough space - write a padding LFH to advance to boundary
+            if (write_padding_lfh(writer, (size_t)space_until_boundary) != 0) {
+                free(entry->filename);
+                return -1;
+            }
+        }
+    }
+
     entry->local_header_offset = writer->current_offset + writer->buffer_used;
 
     // Copy header fields from caller-provided local file header
@@ -216,7 +241,17 @@ int burst_writer_add_file(struct burst_writer *writer,
 
     size_t bytes_read;
 
-    // Handle empty files: write a valid empty Zstandard frame
+    // Handle header-only files (empty files with STORE method, symlinks)
+    // These have no data to compress, so skip directly to the data descriptor
+    if (is_header_only) {
+        // For STORE method empty files: no data bytes at all
+        // The CRC is 0, sizes are 0, and we just write the data descriptor
+        free(input_buffer);
+        free(output_buffer);
+        goto write_descriptor;
+    }
+
+    // Handle empty files using Zstandard method (legacy path for non-header-only)
     // This is required for 7-Zip compatibility with Zstandard method
     if (file_size == 0) {
         // Valid empty Zstandard frame: 13 bytes
@@ -352,7 +387,8 @@ int burst_writer_add_file(struct burst_writer *writer,
     // We must check BEFORE writing the data descriptor, because we cannot
     // insert Zstandard skippable frames between the descriptor and next local header
     // (that space is outside any ZIP file entry).
-    if (next_lfh_len > 0) {  // Skip check if this is the last file
+    // Note: This check is skipped for header-only files as they use padding LFH instead.
+    if (next_lfh_len > 0 && !is_header_only) {  // Skip check if this is the last file or header-only
         uint64_t write_pos = alignment_get_write_position(writer);
         uint64_t next_boundary = alignment_next_boundary(write_pos);
         uint64_t space_until_boundary = next_boundary - write_pos;
@@ -381,6 +417,7 @@ int burst_writer_add_file(struct burst_writer *writer,
         }
     }
 
+write_descriptor:
     // Write data descriptor
     if (write_data_descriptor(writer, entry->crc32, entry->compressed_size, entry->uncompressed_size) != 0) {
         free(entry->filename);

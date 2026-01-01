@@ -1,4 +1,6 @@
 #include "zip_structures.h"
+#include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 #include <time.h>
 
@@ -138,4 +140,78 @@ int write_end_central_directory(struct burst_writer *writer, uint64_t central_di
     eocd.comment_length = 0;
 
     return burst_writer_write(writer, &eocd, sizeof(eocd));
+}
+
+int write_padding_lfh(struct burst_writer *writer, size_t target_size) {
+    // Padding LFH is used to fill space to an 8 MiB boundary when adding
+    // header-only files (empty files, symlinks). It is NOT added to the
+    // central directory, so extractors will ignore it.
+    //
+    // Structure:
+    //   Local File Header (30 bytes)
+    //   Filename ".burst_padding" (14 bytes)
+    //   Extra field (variable length zeros)
+    //   No data, no data descriptor (all values known upfront)
+
+    if (target_size < PADDING_LFH_MIN_SIZE) {
+        fprintf(stderr, "Padding LFH target_size %zu too small (min %d)\n",
+                target_size, PADDING_LFH_MIN_SIZE);
+        return -1;
+    }
+
+    // Calculate extra field length to reach target_size
+    uint16_t extra_field_len = (uint16_t)(target_size - sizeof(struct zip_local_header)
+                                          - PADDING_LFH_FILENAME_LEN);
+
+    // Get current time for timestamp
+    time_t now = time(NULL);
+    uint16_t mod_time, mod_date;
+    dos_datetime_from_time_t(now, &mod_time, &mod_date);
+
+    // Build the local file header
+    struct zip_local_header header;
+    memset(&header, 0, sizeof(header));
+
+    header.signature = ZIP_LOCAL_FILE_HEADER_SIG;
+    header.version_needed = ZIP_VERSION_STORE;
+    header.flags = 0;  // No data descriptor
+    header.compression_method = ZIP_METHOD_STORE;
+    header.last_mod_time = mod_time;
+    header.last_mod_date = mod_date;
+    header.crc32 = 0;
+    header.compressed_size = 0;
+    header.uncompressed_size = 0;
+    header.filename_length = PADDING_LFH_FILENAME_LEN;
+    header.extra_field_length = extra_field_len;
+
+    // Write header
+    if (burst_writer_write(writer, &header, sizeof(header)) != 0) {
+        return -1;
+    }
+
+    // Write filename
+    if (burst_writer_write(writer, PADDING_LFH_FILENAME, PADDING_LFH_FILENAME_LEN) != 0) {
+        return -1;
+    }
+
+    // Write extra field (zeros)
+    if (extra_field_len > 0) {
+        uint8_t *extra = calloc(1, extra_field_len);
+        if (!extra) {
+            fprintf(stderr, "Failed to allocate padding LFH extra field\n");
+            return -1;
+        }
+
+        int result = burst_writer_write(writer, extra, extra_field_len);
+        free(extra);
+
+        if (result != 0) {
+            return -1;
+        }
+    }
+
+    // Track padding bytes
+    writer->padding_bytes += target_size;
+
+    return 0;
 }

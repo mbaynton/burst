@@ -162,7 +162,8 @@ static int collect_files_recursive(struct file_list *list,
 // Build a local file header for a given filename
 // Returns allocated buffer containing header + filename, caller must free
 // Sets *lfh_len_out to total size
-static struct zip_local_header* build_local_file_header(const char *filename, int *lfh_len_out) {
+// If is_empty is true, uses STORE method instead of Zstandard
+static struct zip_local_header* build_local_file_header(const char *filename, bool is_empty, int *lfh_len_out) {
     // Get current time
     time_t now = time(NULL);
     uint16_t mod_time, mod_date;
@@ -181,9 +182,17 @@ static struct zip_local_header* build_local_file_header(const char *filename, in
     // Fill in header
     memset(lfh, 0, sizeof(struct zip_local_header));
     lfh->signature = ZIP_LOCAL_FILE_HEADER_SIG;
-    lfh->version_needed = ZIP_VERSION_ZSTD;  // Phase 3: Always Zstandard
     lfh->flags = ZIP_FLAG_DATA_DESCRIPTOR;
-    lfh->compression_method = ZIP_METHOD_ZSTD;
+
+    // Empty files use STORE method (no compression)
+    if (is_empty) {
+        lfh->version_needed = ZIP_VERSION_STORE;
+        lfh->compression_method = ZIP_METHOD_STORE;
+    } else {
+        lfh->version_needed = ZIP_VERSION_ZSTD;
+        lfh->compression_method = ZIP_METHOD_ZSTD;
+    }
+
     lfh->last_mod_time = mod_time;
     lfh->last_mod_date = mod_date;
     lfh->crc32 = 0;  // Will be in data descriptor
@@ -354,6 +363,15 @@ int main(int argc, char **argv) {
         const char *input_path = files->paths[i];
         const char *archive_name = files->names[i];
 
+        // Check file size to detect empty files
+        struct stat file_stat;
+        if (stat(input_path, &file_stat) != 0) {
+            fprintf(stderr, "Failed to stat file: %s\n", input_path);
+            perror("stat");
+            continue;
+        }
+        bool is_empty = (file_stat.st_size == 0);
+
         // Open the file
         FILE *input = fopen(input_path, "rb");
         if (!input) {
@@ -364,7 +382,7 @@ int main(int argc, char **argv) {
 
         // Build local file header for current file
         int lfh_len = 0;
-        struct zip_local_header *lfh = build_local_file_header(archive_name, &lfh_len);
+        struct zip_local_header *lfh = build_local_file_header(archive_name, is_empty, &lfh_len);
         if (!lfh) {
             fprintf(stderr, "Failed to build local file header\n");
             fclose(input);
@@ -372,17 +390,18 @@ int main(int argc, char **argv) {
         }
 
         // Calculate next file's local header size
+        // For size calculation, assume non-empty (doesn't affect header size)
         int next_lfh_len = 0;
         if (i + 1 < files->count) {  // Not the last file
             const char *next_archive_name = files->names[i + 1];
-            struct zip_local_header *next_lfh = build_local_file_header(next_archive_name, &next_lfh_len);
+            struct zip_local_header *next_lfh = build_local_file_header(next_archive_name, false, &next_lfh_len);
             if (next_lfh) {
                 free(next_lfh);
             }
         }
 
         // Add the file
-        if (burst_writer_add_file(writer, input, lfh, lfh_len, next_lfh_len) != 0) {
+        if (burst_writer_add_file(writer, input, lfh, lfh_len, next_lfh_len, is_empty) != 0) {
             fprintf(stderr, "Failed to add file: %s\n", input_path);
             free(lfh);
             fclose(input);

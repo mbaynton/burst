@@ -213,6 +213,17 @@ target_link_libraries(test_central_dir_parser_integration
 )
 add_test(NAME test_central_dir_parser_integration COMMAND test_central_dir_parser_integration)
 
+# Padding LFH integration test (verifies 7zz extraction)
+add_executable(test_padding_lfh_extraction integration/test_padding_lfh_extraction.c)
+target_link_libraries(test_padding_lfh_extraction
+    burst_writer_lib
+    unity
+)
+add_test(NAME test_padding_lfh_extraction COMMAND test_padding_lfh_extraction)
+set_tests_properties(test_padding_lfh_extraction PROPERTIES
+    LABELS "integration"
+    TIMEOUT 60)
+
 # Integration tests (shell-based)
 
 add_test(NAME test_writer_basic

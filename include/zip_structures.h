@@ -29,6 +29,11 @@
 #define ZIP_VERSION_DEFLATE 20  // 2.0
 #define ZIP_VERSION_ZSTD 63     // 6.3
 
+// Padding LFH constants
+#define PADDING_LFH_FILENAME ".burst_padding"
+#define PADDING_LFH_FILENAME_LEN 14
+#define PADDING_LFH_MIN_SIZE 44  // 30 (header) + 14 (filename), no descriptor
+
 // ZIP local file header (fixed portion)
 struct zip_local_header {
     uint32_t signature;           // 0x04034b50
@@ -102,5 +107,9 @@ int write_end_central_directory(struct burst_writer *writer, uint64_t central_di
 void dos_datetime_from_time_t(time_t t, uint16_t *time_out, uint16_t *date_out);
 size_t get_local_header_size(const char *filename);
 size_t get_central_header_size(const char *filename);
+
+// Write an unlisted padding LFH (not added to central directory)
+// Used to pad to boundaries for header-only files (empty files, symlinks)
+int write_padding_lfh(struct burst_writer *writer, size_t target_size);
 
 #endif // ZIP_STRUCTURES_H
