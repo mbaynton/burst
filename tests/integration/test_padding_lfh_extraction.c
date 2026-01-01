@@ -119,7 +119,7 @@ void test_padding_lfh_then_real_file(void) {
     TEST_ASSERT_NOT_NULL(lfh);
 
     // Add real file to archive
-    result = burst_writer_add_file(writer, input, lfh, lfh_len, 0, false);
+    result = burst_writer_add_file(writer, input, lfh, lfh_len, false);
     TEST_ASSERT_EQUAL(0, result);
 
     fclose(input);
@@ -202,7 +202,7 @@ void test_multiple_padding_lfhs(void) {
     input = fopen(temp_file, "rb");
     int lfh_len;
     struct zip_local_header *lfh = create_test_lfh("content.txt", false, &lfh_len);
-    burst_writer_add_file(writer, input, lfh, lfh_len, 0, false);
+    burst_writer_add_file(writer, input, lfh, lfh_len, false);
     fclose(input);
     free(lfh);
     unlink(temp_file);
@@ -270,7 +270,7 @@ void test_padding_lfh_large_extra_field(void) {
     input = fopen(temp_file, "rb");
     int lfh_len;
     struct zip_local_header *lfh = create_test_lfh("after_large.txt", false, &lfh_len);
-    burst_writer_add_file(writer, input, lfh, lfh_len, 0, false);
+    burst_writer_add_file(writer, input, lfh, lfh_len, false);
     fclose(input);
     free(lfh);
     unlink(temp_file);
@@ -321,9 +321,7 @@ void test_padding_lfh_zipinfo_count(void) {
         int lfh_len;
         struct zip_local_header *lfh = create_test_lfh(filename, false, &lfh_len);
 
-        // next_lfh_len = 0 for last file
-        int next_len = (i == 1) ? 0 : (sizeof(struct zip_local_header) + strlen("file1.txt"));
-        burst_writer_add_file(writer, input, lfh, lfh_len, next_len, false);
+        burst_writer_add_file(writer, input, lfh, lfh_len, false);
 
         fclose(input);
         free(lfh);

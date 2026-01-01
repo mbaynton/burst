@@ -389,19 +389,8 @@ int main(int argc, char **argv) {
             continue;
         }
 
-        // Calculate next file's local header size
-        // For size calculation, assume non-empty (doesn't affect header size)
-        int next_lfh_len = 0;
-        if (i + 1 < files->count) {  // Not the last file
-            const char *next_archive_name = files->names[i + 1];
-            struct zip_local_header *next_lfh = build_local_file_header(next_archive_name, false, &next_lfh_len);
-            if (next_lfh) {
-                free(next_lfh);
-            }
-        }
-
         // Add the file
-        if (burst_writer_add_file(writer, input, lfh, lfh_len, next_lfh_len, is_empty) != 0) {
+        if (burst_writer_add_file(writer, input, lfh, lfh_len, is_empty) != 0) {
             fprintf(stderr, "Failed to add file: %s\n", input_path);
             free(lfh);
             fclose(input);

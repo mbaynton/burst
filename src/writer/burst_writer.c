@@ -133,30 +133,31 @@ It may write a number of structures to the output in the process:
 
 It is responsible for ensuring that it does not write any type of data
 other than a Start-of-Part frame or a Local File Header at an 8MiB part boundary,
-and for ensuring that sufficient free space to the next boundary exists for the next
-file's Local File Header.
+and for ensuring that sufficient free space to the next boundary exists for a minimal
+local file header.
 */
 int burst_writer_add_file(struct burst_writer *writer,
                           FILE *input_file,
                           struct zip_local_header *lfh,
                           int lfh_len,
-                          int next_lfh_len,
                           bool is_header_only) {
     if (!writer || !input_file || !lfh || lfh_len <= 0) {
         return -1;
     }
 
     // Get file size
-    if (fseek(input_file, 0, SEEK_END) != 0) {
-        fprintf(stderr, "Failed to seek input file: %s\n", strerror(errno));
-        return -1;
+    long file_size = 0;
+    if (!is_header_only) {
+        if (fseek(input_file, 0, SEEK_END) != 0) {
+            fprintf(stderr, "Failed to seek input file: %s\n", strerror(errno));
+            return -1;
+        }
+        if (file_size < 0) {
+            fprintf(stderr, "Failed to get file size: %s\n", strerror(errno));
+            return -1;
+        }
+        rewind(input_file);
     }
-    long file_size = ftell(input_file);
-    if (file_size < 0) {
-        fprintf(stderr, "Failed to get file size: %s\n", strerror(errno));
-        return -1;
-    }
-    rewind(input_file);
 
     // Expand file tracking array if needed
     if (writer->num_files >= writer->files_capacity) {
@@ -181,17 +182,19 @@ int burst_writer_add_file(struct burst_writer *writer,
         return -1;
     }
 
-    // For header-only files (empty files, symlinks), check if we need to insert
-    // a padding LFH before writing this file's LFH to ensure proper alignment.
-    // Header-only files have no Zstandard frames, so we can't use skippable frames
-    // for padding. Instead, we write an unlisted LFH that extractors will ignore.
-    if (is_header_only) {
+    // Check if we need to insert a padding LFH before writing this file's LFH
+    // to ensure proper alignment. This ensures we always have room for the current
+    // file's LFH + data descriptor + at least a minimum padding LFH for the next file.
+    {
         uint64_t write_pos = alignment_get_write_position(writer);
         uint64_t next_boundary = alignment_next_boundary(write_pos);
         uint64_t space_until_boundary = next_boundary - write_pos;
 
         // Space needed: current LFH + data descriptor + minimum padding LFH
         // The data descriptor is 16 bytes (even for STORE method, for consistency)
+        // It's possible we could further optimize this in future, for example by computing
+        // space needed more precisely based on the data that will follow this file's LFH and
+        // padding options for the data type following this file's LFH.
         const size_t data_descriptor_size = sizeof(struct zip_data_descriptor);
         size_t space_needed = (size_t)lfh_len + data_descriptor_size + PADDING_LFH_MIN_SIZE;
 
@@ -251,24 +254,7 @@ int burst_writer_add_file(struct burst_writer *writer,
         goto write_descriptor;
     }
 
-    // Handle empty files using Zstandard method (legacy path for non-header-only)
-    // This is required for 7-Zip compatibility with Zstandard method
-    if (file_size == 0) {
-        // Valid empty Zstandard frame: 13 bytes
-        // Magic (4) + frame header (5) + checksum (4)
-        const uint8_t empty_zstd_frame[] = {
-            0x28, 0xB5, 0x2F, 0xFD,  // Magic number
-            0x24, 0x00, 0x01, 0x00, 0x00,  // Frame header (FCS=0, single segment, no checksum flag but checksum present)
-            0x99, 0xE9, 0xD8, 0x51   // XXH64 checksum of empty data
-        };
-
-        if (burst_writer_write(writer, empty_zstd_frame, sizeof(empty_zstd_frame)) < 0) {
-            free(input_buffer);
-            free(output_buffer);
-            free(entry->filename);
-            return -1;
-        }
-    }
+    // Otherwise this is a regular and non-empty file, so start writing compressed zstandard frames.
 
     while ((bytes_read = fread(input_buffer, 1, ZSTD_CHUNK_SIZE, input_file)) > 0) {
         // Compute CRC32 of uncompressed data
@@ -383,37 +369,37 @@ int burst_writer_add_file(struct burst_writer *writer,
     entry->uncompressed_size = total_uncompressed;
     entry->crc32 = crc;
 
-    // Check if next file's local header would fit before boundary
+    // Check if minimum padding LFH would fit after data descriptor before boundary.
     // We must check BEFORE writing the data descriptor, because we cannot
     // insert Zstandard skippable frames between the descriptor and next local header
     // (that space is outside any ZIP file entry).
-    // Note: This check is skipped for header-only files as they use padding LFH instead.
-    if (next_lfh_len > 0 && !is_header_only) {  // Skip check if this is the last file or header-only
-        uint64_t write_pos = alignment_get_write_position(writer);
-        uint64_t next_boundary = alignment_next_boundary(write_pos);
-        uint64_t space_until_boundary = next_boundary - write_pos;
+    // Note: This check is skipped for header-only files as they have no compressed data
+    // where we could insert skippable frames.
+    uint64_t write_pos = alignment_get_write_position(writer);
+    uint64_t next_boundary = alignment_next_boundary(write_pos);
+    uint64_t space_until_boundary = next_boundary - write_pos;
 
-        // Space needed: data descriptor (16 bytes) + next local header (actual size)
-        const size_t descriptor_size = sizeof(struct zip_data_descriptor);
-        size_t space_needed = descriptor_size + next_lfh_len;
+    // Space needed: data descriptor (16 bytes) + minimum padding LFH (44 bytes)
+    // The next file's entry check will insert a padding LFH if its actual header is larger
+    const size_t descriptor_size = sizeof(struct zip_data_descriptor);
+    size_t space_needed = descriptor_size + PADDING_LFH_MIN_SIZE;
 
-        // If insufficient space, pad current file to boundary so descriptor + next header
-        // will be at/after boundary
-        if (space_until_boundary < space_needed + BURST_MIN_SKIPPABLE_FRAME_SIZE) {
-            // Not enough space - pad to boundary within current file's compressed data
-            size_t padding_size = (size_t)(space_until_boundary - 8);  // Exclude frame header
+    // If insufficient space, pad current file to boundary so descriptor + next header
+    // will be at/after boundary
+    if (space_until_boundary < space_needed + BURST_MIN_SKIPPABLE_FRAME_SIZE) {
+        // Not enough space - pad to boundary within current file's compressed data
+        size_t padding_size = (size_t)(space_until_boundary - 8);  // Exclude frame header
 
-            if (alignment_write_padding_frame(writer, padding_size) != 0) {
-                free(entry->filename);
-                return -1;
-            }
+        if (alignment_write_padding_frame(writer, padding_size) != 0) {
+            free(entry->filename);
+            return -1;
+        }
 
-            // Write Start-of-Part frame at boundary indicating where data descriptor
-            // and next file will begin. Use current file's final uncompressed offset.
-            if (alignment_write_start_of_part_frame(writer, total_uncompressed) != 0) {
-                free(entry->filename);
-                return -1;
-            }
+        // Write Start-of-Part frame at boundary indicating where data descriptor
+        // and next file will begin. Use current file's final uncompressed offset.
+        if (alignment_write_start_of_part_frame(writer, total_uncompressed) != 0) {
+            free(entry->filename);
+            return -1;
         }
     }
 
