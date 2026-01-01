@@ -97,6 +97,19 @@ make
 - `-l, --level LEVEL` - Compression level -15 to 22 (default: 3)
 - `-h, --help` - Show help message
 
+### Extract Archive
+```bash
+# Standard extraction with 7zz
+7zz x archive.zip
+
+# Exclude internal padding files (optional, only affects archives with empty files)
+7zz x -xr!.burst_padding archive.zip
+```
+
+**Note**: BURST archives use unlisted local file headers for alignment padding when
+archiving empty files. Standard ZIP tools ignore these, but 7zz may extract them as
+harmless 0-byte `.burst_padding` files. Use the `-xr!.burst_padding` option to exclude them.
+
 ## Testing
 
 ### Run All Tests

@@ -315,6 +315,25 @@ int do_write_encoded(int fd, const uint8_t* zstd_frame, size_t frame_len,
 - ✅ Skips padding frames (Zstandard skippable frame property)
 - ✅ Maintains full ZIP compatibility
 
+### Padding LFH for Header-Only Files
+
+For proper alignment of "header-only" files (empty files, symlinks), BURST uses unlisted
+local file headers (LFHs) as padding. These entries:
+- Are NOT listed in the central directory
+- Use the filename `.burst_padding`
+- Have zero-length content (STORE method, 0 bytes)
+
+**Standard behavior**: Tools that follow the ZIP specification (reading only the central
+directory) will not see or extract these padding entries.
+
+**7-Zip behavior**: 7zz scans local file headers in addition to the central directory,
+and will extract `.burst_padding` as a 0-byte file. This is harmless but can be avoided:
+
+```bash
+# Exclude padding files during extraction with 7zz
+7zz x -xr!.burst_padding archive.zip
+```
+
 ### BURST Downloader Fallback
 - If extra fields missing: fall back to sequential extraction
 - Parse local headers and decompress normally
