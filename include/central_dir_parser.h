@@ -108,6 +108,14 @@ struct file_metadata {
     uint32_t crc32;
     uint16_t compression_method;
     uint32_t part_index;               // Derived: local_header_offset / 8MiB
+
+    // Unix metadata from external_file_attributes and extra fields
+    uint32_t unix_mode;                // Unix mode bits (from external_file_attributes >> 16)
+    uint32_t uid;                      // Unix user ID (from 0x7875 extra field)
+    uint32_t gid;                      // Unix group ID (from 0x7875 extra field)
+    bool has_unix_mode;                // True if unix_mode was extracted
+    bool has_unix_extra;               // True if uid/gid were extracted from extra field
+    bool is_symlink;                   // True if (unix_mode & S_IFMT) == S_IFLNK
 };
 
 /**

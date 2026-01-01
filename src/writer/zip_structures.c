@@ -89,6 +89,11 @@ int write_central_directory(struct burst_writer *writer) {
         struct zip_central_header header;
         memset(&header, 0, sizeof(header));
 
+        // Build Unix extra field for central directory
+        uint8_t extra_field[16];
+        size_t extra_field_len = build_unix_extra_field(extra_field, sizeof(extra_field),
+                                                         entry->uid, entry->gid);
+
         header.signature = ZIP_CENTRAL_DIR_HEADER_SIG;
         header.version_made_by = (3 << 8) | 63;  // Unix (3) + version 6.3
         header.version_needed = entry->version_needed;
@@ -103,11 +108,11 @@ int write_central_directory(struct burst_writer *writer) {
         header.uncompressed_size = (uint32_t)entry->uncompressed_size;
 
         header.filename_length = strlen(entry->filename);
-        header.extra_field_length = 0;
+        header.extra_field_length = extra_field_len;
         header.file_comment_length = 0;
         header.disk_number_start = 0;
         header.internal_file_attributes = 0;
-        header.external_file_attributes = 0100644 << 16;  // Unix permissions: rw-r--r--
+        header.external_file_attributes = entry->unix_mode << 16;  // Unix mode in upper 16 bits
         header.local_header_offset = (uint32_t)entry->local_header_offset;
 
         // Write central directory header
@@ -118,6 +123,13 @@ int write_central_directory(struct burst_writer *writer) {
         // Write filename
         if (burst_writer_write(writer, entry->filename, header.filename_length) != 0) {
             return -1;
+        }
+
+        // Write extra field
+        if (extra_field_len > 0) {
+            if (burst_writer_write(writer, extra_field, extra_field_len) != 0) {
+                return -1;
+            }
         }
     }
 
@@ -214,4 +226,57 @@ int write_padding_lfh(struct burst_writer *writer, size_t target_size) {
     writer->padding_bytes += target_size;
 
     return 0;
+}
+
+size_t build_unix_extra_field(uint8_t *buffer, size_t buffer_size, uint32_t uid, uint32_t gid) {
+    // Info-ZIP Unix extra field (0x7875) format:
+    //   Header ID:  0x7875 (2 bytes)
+    //   TSize:      Total data size (2 bytes)
+    //   Version:    1 (1 byte)
+    //   UIDSize:    Size of UID field (1 byte)
+    //   UID:        User ID (UIDSize bytes, little-endian)
+    //   GIDSize:    Size of GID field (1 byte)
+    //   GID:        Group ID (GIDSize bytes, little-endian)
+    //
+    // We always use 4-byte uid/gid for simplicity (covers all practical values)
+    // Total size: 2 + 2 + 1 + 1 + 4 + 1 + 4 = 15 bytes
+
+    const size_t extra_field_size = 15;
+    if (buffer_size < extra_field_size) {
+        return 0;
+    }
+
+    size_t offset = 0;
+
+    // Header ID (0x7875) - little-endian
+    buffer[offset++] = ZIP_EXTRA_UNIX_7875_ID & 0xFF;
+    buffer[offset++] = (ZIP_EXTRA_UNIX_7875_ID >> 8) & 0xFF;
+
+    // TSize: data size after this field (1 + 1 + 4 + 1 + 4 = 11 bytes)
+    uint16_t tsize = 11;
+    buffer[offset++] = tsize & 0xFF;
+    buffer[offset++] = (tsize >> 8) & 0xFF;
+
+    // Version: 1
+    buffer[offset++] = 1;
+
+    // UIDSize: 4 bytes
+    buffer[offset++] = 4;
+
+    // UID: 4 bytes, little-endian
+    buffer[offset++] = uid & 0xFF;
+    buffer[offset++] = (uid >> 8) & 0xFF;
+    buffer[offset++] = (uid >> 16) & 0xFF;
+    buffer[offset++] = (uid >> 24) & 0xFF;
+
+    // GIDSize: 4 bytes
+    buffer[offset++] = 4;
+
+    // GID: 4 bytes, little-endian
+    buffer[offset++] = gid & 0xFF;
+    buffer[offset++] = (gid >> 8) & 0xFF;
+    buffer[offset++] = (gid >> 16) & 0xFF;
+    buffer[offset++] = (gid >> 24) & 0xFF;
+
+    return extra_field_size;
 }

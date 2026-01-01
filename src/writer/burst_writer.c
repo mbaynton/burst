@@ -140,7 +140,10 @@ int burst_writer_add_file(struct burst_writer *writer,
                           FILE *input_file,
                           struct zip_local_header *lfh,
                           int lfh_len,
-                          bool is_header_only) {
+                          bool is_header_only,
+                          uint32_t unix_mode,
+                          uint32_t uid,
+                          uint32_t gid) {
     if (!writer || !input_file || !lfh || lfh_len <= 0) {
         return -1;
     }
@@ -215,6 +218,11 @@ int burst_writer_add_file(struct burst_writer *writer,
     entry->general_purpose_flags = lfh->flags;
     entry->last_mod_time = lfh->last_mod_time;
     entry->last_mod_date = lfh->last_mod_date;
+
+    // Store Unix metadata for central directory
+    entry->unix_mode = unix_mode;
+    entry->uid = uid;
+    entry->gid = gid;
 
     // Write the pre-constructed local file header directly
     if (burst_writer_write(writer, lfh, lfh_len) < 0) {
@@ -416,6 +424,114 @@ write_descriptor:
     writer->num_files++;
 
     printf("Added file: %s (%lu bytes)\n", filename, (unsigned long)entry->uncompressed_size);
+
+    return 0;
+}
+
+/*
+burst_writer_add_symlink adds a symbolic link to the BURST archive.
+Unlike burst_writer_add_file, symlinks:
+- Use STORE method (no compression)
+- Have known content size upfront (target path length)
+- Store CRC32 and sizes directly in LFH (no data descriptor, bit 3 NOT set)
+- Content is the symlink target path (no null terminator in archive)
+
+Alignment: Since we know the exact size upfront, we check if:
+  lfh_len + target_len + PADDING_LFH_MIN_SIZE fits before boundary.
+If not, we write a padding LFH to advance to boundary first.
+*/
+int burst_writer_add_symlink(struct burst_writer *writer,
+                              struct zip_local_header *lfh,
+                              int lfh_len,
+                              const char *target,
+                              size_t target_len,
+                              uint32_t unix_mode,
+                              uint32_t uid,
+                              uint32_t gid) {
+    if (!writer || !lfh || lfh_len <= 0 || !target || target_len == 0) {
+        return -1;
+    }
+
+    // Expand file tracking array if needed
+    if (writer->num_files >= writer->files_capacity) {
+        size_t new_capacity = writer->files_capacity * 2;
+        struct file_entry *new_files = realloc(writer->files, new_capacity * sizeof(struct file_entry));
+        if (!new_files) {
+            fprintf(stderr, "Failed to expand file tracking array\n");
+            return -1;
+        }
+        writer->files = new_files;
+        writer->files_capacity = new_capacity;
+    }
+
+    // Initialize file entry
+    struct file_entry *entry = &writer->files[writer->num_files];
+    memset(entry, 0, sizeof(struct file_entry));
+
+    // Extract filename from local file header
+    const char *filename = (const char *)((uint8_t *)lfh + sizeof(struct zip_local_header));
+    entry->filename = strndup(filename, lfh->filename_length);
+    if (!entry->filename) {
+        return -1;
+    }
+
+    // Check alignment: lfh + target + minimum padding LFH for next file
+    // (No data descriptor for symlinks - sizes known upfront)
+    {
+        uint64_t write_pos = alignment_get_write_position(writer);
+        uint64_t next_boundary = alignment_next_boundary(write_pos);
+        uint64_t space_until_boundary = next_boundary - write_pos;
+
+        size_t space_needed = (size_t)lfh_len + target_len + PADDING_LFH_MIN_SIZE;
+
+        if (space_until_boundary < space_needed) {
+            // Not enough space - write a padding LFH to advance to boundary
+            if (write_padding_lfh(writer, (size_t)space_until_boundary) != 0) {
+                free(entry->filename);
+                return -1;
+            }
+        }
+    }
+
+    entry->local_header_offset = writer->current_offset + writer->buffer_used;
+
+    // Copy header fields from caller-provided local file header
+    entry->compression_method = lfh->compression_method;
+    entry->version_needed = lfh->version_needed;
+    entry->general_purpose_flags = lfh->flags;
+    entry->last_mod_time = lfh->last_mod_time;
+    entry->last_mod_date = lfh->last_mod_date;
+
+    // Symlinks have content, so CRC and sizes are in LFH (pre-computed by caller)
+    entry->crc32 = lfh->crc32;
+    entry->compressed_size = target_len;  // STORE method: compressed = uncompressed
+    entry->uncompressed_size = target_len;
+
+    // Store Unix metadata for central directory
+    entry->unix_mode = unix_mode;
+    entry->uid = uid;
+    entry->gid = gid;
+
+    // Write the pre-constructed local file header
+    if (burst_writer_write(writer, lfh, lfh_len) < 0) {
+        free(entry->filename);
+        return -1;
+    }
+
+    // Write symlink target as file content (no compression)
+    if (burst_writer_write(writer, target, target_len) < 0) {
+        free(entry->filename);
+        return -1;
+    }
+
+    // No data descriptor for symlinks - sizes are in the LFH
+
+    // Update statistics
+    writer->total_uncompressed += entry->uncompressed_size;
+    writer->total_compressed += entry->compressed_size;
+    writer->num_files++;
+
+    printf("Added symlink: %s -> %.*s\n", entry->filename, (int)target_len, target);
 
     return 0;
 }

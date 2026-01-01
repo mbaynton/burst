@@ -91,6 +91,7 @@ void part_processor_destroy(struct part_processor_state *state)
         if (state->current_file->fd >= 0) {
             close(state->current_file->fd);
         }
+        free(state->current_file->symlink_buffer);
         free(state->current_file->filename);
         free(state->current_file);
     }
@@ -269,7 +270,13 @@ int part_processor_process_data(
             offset += bytes_consumed;
             state->bytes_processed += bytes_consumed;
             state->next_entry_idx++;
-            state->state = STATE_PROCESSING_FRAMES;
+
+            // Symlinks use STATE_READING_SYMLINK to read raw content
+            if (state->current_file && state->current_file->is_symlink) {
+                state->state = STATE_READING_SYMLINK;
+            } else {
+                state->state = STATE_PROCESSING_FRAMES;
+            }
             break;
         }
 
@@ -362,6 +369,41 @@ int part_processor_process_data(
                 state->state = STATE_ERROR;
                 state->error_code = STREAM_PROC_ERR_INVALID_FRAME;
                 return STREAM_PROC_ERR_INVALID_FRAME;
+            }
+            break;
+        }
+
+        case STATE_READING_SYMLINK: {
+            // Read raw symlink content (STORE method - no compression)
+            if (state->current_file == NULL || state->current_file->symlink_buffer == NULL) {
+                snprintf(state->error_message, sizeof(state->error_message),
+                         "Reading symlink content but no buffer allocated");
+                state->state = STATE_ERROR;
+                state->error_code = STREAM_PROC_ERR_INVALID_FRAME;
+                return STREAM_PROC_ERR_INVALID_FRAME;
+            }
+
+            // Calculate how many bytes we still need
+            size_t bytes_needed = state->current_file->expected_total_size -
+                                  state->current_file->symlink_bytes_read;
+            size_t bytes_to_copy = (remaining < bytes_needed) ? remaining : bytes_needed;
+
+            // Copy raw content to symlink buffer
+            memcpy(state->current_file->symlink_buffer + state->current_file->symlink_bytes_read,
+                   ptr, bytes_to_copy);
+            state->current_file->symlink_bytes_read += bytes_to_copy;
+            offset += bytes_to_copy;
+            state->bytes_processed += bytes_to_copy;
+
+            // Check if we've read all symlink content
+            if (state->current_file->symlink_bytes_read >= state->current_file->expected_total_size) {
+                // Close symlink (creates the actual symlink)
+                int rc = close_output_file(state);
+                if (rc != STREAM_PROC_SUCCESS) {
+                    return rc;
+                }
+                // Symlinks don't have data descriptors, so go directly to next file
+                state->state = STATE_EXPECT_LOCAL_HEADER;
             }
             break;
         }
@@ -625,7 +667,38 @@ static int open_output_file(struct part_processor_state *state,
         return STREAM_PROC_ERR_IO;
     }
 
-    // Open file for writing
+    // Store expected values from central directory
+    state->current_file->expected_total_size = file_meta->uncompressed_size;
+    state->current_file->expected_crc32 = file_meta->crc32;
+
+    // Copy Unix metadata for permission restoration
+    state->current_file->unix_mode = file_meta->unix_mode;
+    state->current_file->uid = file_meta->uid;
+    state->current_file->gid = file_meta->gid;
+    state->current_file->has_unix_mode = file_meta->has_unix_mode;
+    state->current_file->has_unix_extra = file_meta->has_unix_extra;
+    state->current_file->is_symlink = file_meta->is_symlink;
+
+    // Symlinks: allocate buffer for target path instead of opening file
+    if (file_meta->is_symlink) {
+        state->current_file->fd = -1;  // No file descriptor for symlinks
+        state->current_file->symlink_buffer_size = file_meta->uncompressed_size + 1;  // +1 for null terminator
+        state->current_file->symlink_buffer = malloc(state->current_file->symlink_buffer_size);
+        if (state->current_file->symlink_buffer == NULL) {
+            snprintf(state->error_message, sizeof(state->error_message),
+                     "Failed to allocate symlink buffer for %s", state->current_file->filename);
+            free(state->current_file->filename);
+            free(state->current_file);
+            state->current_file = NULL;
+            state->state = STATE_ERROR;
+            state->error_code = STREAM_PROC_ERR_MEMORY;
+            return STREAM_PROC_ERR_MEMORY;
+        }
+        state->current_file->symlink_bytes_read = 0;
+        return STREAM_PROC_SUCCESS;
+    }
+
+    // Regular file: open for writing
     // Never use O_TRUNC - with concurrent part processing, parts may complete
     // out of order, so we must not truncate data written by other parts
     state->current_file->fd = open(state->current_file->filename,
@@ -641,16 +714,50 @@ static int open_output_file(struct part_processor_state *state,
         return STREAM_PROC_ERR_IO;
     }
 
-    // Store expected values from central directory
-    state->current_file->expected_total_size = file_meta->uncompressed_size;
-    state->current_file->expected_crc32 = file_meta->crc32;
-
     return STREAM_PROC_SUCCESS;
 }
 
 static int close_output_file(struct part_processor_state *state)
 {
     if (state->current_file == NULL) {
+        return STREAM_PROC_SUCCESS;
+    }
+
+    // Handle symlinks: create symlink from buffered target path
+    if (state->current_file->is_symlink && state->current_file->symlink_buffer != NULL) {
+        // Null-terminate the target path
+        state->current_file->symlink_buffer[state->current_file->symlink_bytes_read] = '\0';
+
+        // Remove existing symlink/file if it exists
+        unlink(state->current_file->filename);
+
+        // Create symlink
+        if (symlink((char *)state->current_file->symlink_buffer, state->current_file->filename) != 0) {
+            // Log but don't fail (symlink may already exist from another part)
+            fprintf(stderr, "Warning: failed to create symlink %s -> %s: %s\n",
+                    state->current_file->filename,
+                    (char *)state->current_file->symlink_buffer,
+                    strerror(errno));
+        }
+
+        // Apply ownership to symlink if running as root (using lchown, not fchown)
+        if (state->current_file->has_unix_extra) {
+            if (geteuid() == 0) {
+                if (lchown(state->current_file->filename, state->current_file->uid, state->current_file->gid) != 0) {
+                    fprintf(stderr, "Warning: failed to set ownership on symlink %s: %s\n",
+                            state->current_file->filename, strerror(errno));
+                }
+            }
+        }
+
+        // Free symlink buffer
+        free(state->current_file->symlink_buffer);
+        state->current_file->symlink_buffer = NULL;
+
+        free(state->current_file->filename);
+        free(state->current_file);
+        state->current_file = NULL;
+
         return STREAM_PROC_SUCCESS;
     }
 
@@ -665,9 +772,35 @@ static int close_output_file(struct part_processor_state *state)
                     state->current_file->filename, strerror(errno));
         }
 
+        // Apply Unix permissions if available
+        if (state->current_file->has_unix_mode) {
+            // Extract permission bits only (lower 12 bits: rwx + setuid/setgid/sticky)
+            mode_t mode = state->current_file->unix_mode & 07777;
+            if (fchmod(state->current_file->fd, mode) != 0) {
+                // Log but don't fail
+                fprintf(stderr, "Warning: failed to set permissions on %s: %s\n",
+                        state->current_file->filename, strerror(errno));
+            }
+        }
+
+        // Apply Unix ownership if available and running as root
+        if (state->current_file->has_unix_extra) {
+            if (geteuid() == 0) {
+                if (fchown(state->current_file->fd, state->current_file->uid, state->current_file->gid) != 0) {
+                    // Log error when running as root (shouldn't fail)
+                    fprintf(stderr, "Warning: failed to set ownership on %s: %s\n",
+                            state->current_file->filename, strerror(errno));
+                }
+            }
+            // Silently skip chown when not running as root
+        }
+
         close(state->current_file->fd);
         state->current_file->fd = -1;
     }
+
+    // Free any allocated symlink buffer (in case of error cleanup)
+    free(state->current_file->symlink_buffer);
 
     free(state->current_file->filename);
     free(state->current_file);

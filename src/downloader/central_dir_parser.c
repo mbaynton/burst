@@ -3,9 +3,85 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <sys/stat.h>
 
 // ZIP64 End of Central Directory Locator signature
 #define ZIP64_EOCD_LOCATOR_SIG 0x07064b50
+
+/**
+ * Parse Unix extra field (0x7875) to extract uid/gid.
+ *
+ * @param extra_field    Pointer to extra field data (after fixed header)
+ * @param extra_len      Length of extra field data
+ * @param uid            Output: Unix user ID
+ * @param gid            Output: Unix group ID
+ * @return true if 0x7875 field was found and parsed, false otherwise
+ */
+static bool parse_unix_extra_field(const uint8_t *extra_field, uint16_t extra_len,
+                                   uint32_t *uid, uint32_t *gid) {
+    const uint8_t *ptr = extra_field;
+    const uint8_t *end = extra_field + extra_len;
+
+    while (ptr + 4 <= end) {
+        // Read header ID (2 bytes) and data size (2 bytes)
+        uint16_t header_id;
+        uint16_t data_size;
+        memcpy(&header_id, ptr, sizeof(uint16_t));
+        memcpy(&data_size, ptr + 2, sizeof(uint16_t));
+        ptr += 4;
+
+        // Check if this is the Unix extra field (0x7875)
+        if (header_id == ZIP_EXTRA_UNIX_7875_ID) {
+            // Verify we have enough data
+            if (ptr + data_size > end || data_size < 3) {
+                return false;
+            }
+
+            // Parse 0x7875 format:
+            // Version (1 byte)
+            // UIDSize (1 byte)
+            // UID (UIDSize bytes)
+            // GIDSize (1 byte)
+            // GID (GIDSize bytes)
+            uint8_t version = ptr[0];
+            if (version != 1) {
+                return false;  // Unknown version
+            }
+
+            uint8_t uid_size = ptr[1];
+            if (ptr + 2 + uid_size + 1 > end) {
+                return false;
+            }
+
+            // Read UID (little-endian, variable size)
+            *uid = 0;
+            for (uint8_t i = 0; i < uid_size && i < 4; i++) {
+                *uid |= ((uint32_t)ptr[2 + i]) << (i * 8);
+            }
+
+            uint8_t gid_size = ptr[2 + uid_size];
+            if (ptr + 2 + uid_size + 1 + gid_size > end) {
+                return false;
+            }
+
+            // Read GID (little-endian, variable size)
+            *gid = 0;
+            for (uint8_t i = 0; i < gid_size && i < 4; i++) {
+                *gid |= ((uint32_t)ptr[3 + uid_size + i]) << (i * 8);
+            }
+
+            return true;
+        }
+
+        // Skip to next extra field entry
+        if (ptr + data_size > end) {
+            break;
+        }
+        ptr += data_size;
+    }
+
+    return false;
+}
 
 /**
  * Search backwards from buffer end for EOCD signature.
@@ -165,6 +241,27 @@ static int parse_central_directory(
         // Calculate part index
         file_array[i].part_index = (uint32_t)(header->local_header_offset / part_size);
 
+        // Extract Unix mode from external_file_attributes
+        // Unix stores mode in upper 16 bits of external_file_attributes
+        // Check if version_made_by indicates Unix (upper byte == 3)
+        uint8_t made_by_os = (header->version_made_by >> 8) & 0xFF;
+        if (made_by_os == 3) {  // Unix
+            file_array[i].unix_mode = header->external_file_attributes >> 16;
+            file_array[i].has_unix_mode = true;
+
+            // Check if this is a symlink (S_IFLNK = 0120000)
+            file_array[i].is_symlink = ((file_array[i].unix_mode & S_IFMT) == S_IFLNK);
+        } else {
+            file_array[i].unix_mode = 0;
+            file_array[i].has_unix_mode = false;
+            file_array[i].is_symlink = false;
+        }
+
+        // Initialize extra field info (will be parsed below)
+        file_array[i].uid = 0;
+        file_array[i].gid = 0;
+        file_array[i].has_unix_extra = false;
+
         // Move past fixed header
         ptr += sizeof(struct zip_central_header);
 
@@ -193,6 +290,14 @@ static int parse_central_directory(
         }
         memcpy(file_array[i].filename, ptr, header->filename_length);
         file_array[i].filename[header->filename_length] = '\0';
+
+        // Parse extra field for Unix uid/gid (0x7875)
+        if (header->extra_field_length > 0) {
+            const uint8_t *extra_field_ptr = ptr + header->filename_length;
+            file_array[i].has_unix_extra = parse_unix_extra_field(
+                extra_field_ptr, header->extra_field_length,
+                &file_array[i].uid, &file_array[i].gid);
+        }
 
         // Skip past variable-length fields
         ptr += variable_len;

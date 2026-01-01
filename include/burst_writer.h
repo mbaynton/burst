@@ -26,6 +26,10 @@ struct file_entry {
     uint16_t general_purpose_flags;
     uint16_t last_mod_time;
     uint16_t last_mod_date;
+    // Unix metadata for central directory
+    uint32_t unix_mode;  // Full mode including file type (S_IFREG, S_IFLNK, etc.)
+    uint32_t uid;
+    uint32_t gid;
 };
 
 // BURST writer context
@@ -67,11 +71,36 @@ void burst_writer_destroy(struct burst_writer *writer);
 // lfh_len: Total size of local file header including filename and extra fields
 // is_header_only: True for empty files or symlinks (no compressed data frames)
 //                 When true, ensures proper alignment by inserting padding LFH if needed
+// unix_mode: Unix file mode (permissions + file type) for central directory
+// uid: Unix user ID for extra field
+// gid: Unix group ID for extra field
 int burst_writer_add_file(struct burst_writer *writer,
                           FILE *input_file,
                           struct zip_local_header *lfh,
                           int lfh_len,
-                          bool is_header_only);
+                          bool is_header_only,
+                          uint32_t unix_mode,
+                          uint32_t uid,
+                          uint32_t gid);
+
+// Add a symlink to the archive
+// lfh: Fully-constructed local file header (with STORE method, CRC32 and sizes pre-filled)
+//      The LFH flags should NOT have bit 3 set (no data descriptor)
+// lfh_len: Total size of local file header including filename and extra fields
+// target: Symlink target path (NOT null-terminated in archive)
+// target_len: Length of target path
+// unix_mode: Unix mode (should have S_IFLNK set, e.g., 0120755)
+// uid: Unix user ID for extra field
+// gid: Unix group ID for extra field
+int burst_writer_add_symlink(struct burst_writer *writer,
+                              struct zip_local_header *lfh,
+                              int lfh_len,
+                              const char *target,
+                              size_t target_len,
+                              uint32_t unix_mode,
+                              uint32_t uid,
+                              uint32_t gid);
+
 int burst_writer_finalize(struct burst_writer *writer);
 
 // Internal functions

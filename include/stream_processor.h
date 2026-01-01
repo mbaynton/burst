@@ -67,6 +67,7 @@ enum processor_state {
     STATE_CONTINUING_FILE,      // Processing continuation from previous part
     STATE_EXPECT_LOCAL_HEADER,  // Expecting ZIP local file header
     STATE_PROCESSING_FRAMES,    // Processing Zstd/skippable frames
+    STATE_READING_SYMLINK,      // Reading raw symlink content (STORE method)
     STATE_DONE,                 // Part processing complete
     STATE_ERROR                 // Error state
 };
@@ -83,6 +84,19 @@ struct file_context {
                                     // or 0 for new files. Incremented by each frame's uncompressed size.
     uint64_t expected_total_size;   // From central directory, for validation
     uint32_t expected_crc32;        // From central directory, for validation
+
+    // Unix metadata for permission restoration
+    uint32_t unix_mode;         // Unix mode bits (permissions + file type)
+    uint32_t uid;               // Unix user ID
+    uint32_t gid;               // Unix group ID
+    bool has_unix_mode;         // True if unix_mode should be applied
+    bool has_unix_extra;        // True if uid/gid should be applied
+    bool is_symlink;            // True if this is a symlink (handled differently)
+
+    // Symlink content buffer (for STORE-method symlinks)
+    uint8_t *symlink_buffer;    // Buffer for symlink target path
+    size_t symlink_buffer_size; // Allocated size
+    size_t symlink_bytes_read;  // Bytes read so far
 };
 
 /**
