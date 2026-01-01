@@ -288,6 +288,13 @@ set_tests_properties(test_downloader_encoded_write PROPERTIES
     LABELS "integration;s3"
     TIMEOUT 180)
 
+add_test(NAME test_writer_unix_metadata
+         COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/test_writer_unix_metadata.sh
+         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(test_writer_unix_metadata PROPERTIES
+    LABELS "integration"
+    TIMEOUT 120)
+
 # End-to-end integration tests (require S3 and BTRFS)
 # These tests require:
 #   - AWS credentials configured
@@ -325,3 +332,10 @@ add_test(NAME test_e2e_many_files
 set_tests_properties(test_e2e_many_files PROPERTIES
     LABELS "e2e;integration;s3;btrfs"
     TIMEOUT 600)
+
+add_test(NAME test_e2e_unix_metadata
+         COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/e2e/test_e2e_unix_metadata.sh
+         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(test_e2e_unix_metadata PROPERTIES
+    LABELS "e2e;integration;s3;btrfs;sudo"
+    TIMEOUT 300)
