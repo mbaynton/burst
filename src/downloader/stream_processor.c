@@ -16,6 +16,9 @@
 // Initial frame buffer capacity (will grow as needed)
 #define INITIAL_FRAME_BUFFER_CAPACITY (256 * 1024)
 
+// BURST archives have Start-of-Part frames at 8 MiB boundaries
+#define BURST_BASE_ALIGNMENT (8 * 1024 * 1024)
+
 // Forward declarations for internal functions
 static int handle_start_of_part_frame(struct part_processor_state *state,
                                       const uint8_t *frame_data, size_t frame_size);
@@ -36,7 +39,8 @@ static int ensure_directory_exists(const char *path);
 struct part_processor_state *part_processor_create(
     uint32_t part_index,
     struct central_dir_parse_result *cd_result,
-    const char *output_dir)
+    const char *output_dir,
+    uint64_t part_size)
 {
     if (cd_result == NULL || output_dir == NULL) {
         return NULL;
@@ -52,7 +56,8 @@ struct part_processor_state *part_processor_create(
     }
 
     state->part_index = part_index;
-    state->part_start_offset = (uint64_t)part_index * PART_SIZE;
+    state->part_size = part_size;
+    state->part_start_offset = (uint64_t)part_index * part_size;
     state->cd_result = cd_result;
     state->output_dir = output_dir;
 
@@ -302,14 +307,32 @@ int part_processor_process_data(
                 state->bytes_processed += info.frame_size;
                 break;
 
-            case FRAME_BURST_START_OF_PART:
-                // Start-of-Part in middle of processing means we crossed a boundary
-                // This shouldn't happen if we're processing parts correctly
-                snprintf(state->error_message, sizeof(state->error_message),
-                         "Unexpected Start-of-Part frame in middle of part");
-                state->state = STATE_ERROR;
-                state->error_code = STREAM_PROC_ERR_INVALID_FRAME;
-                return STREAM_PROC_ERR_INVALID_FRAME;
+            case FRAME_BURST_START_OF_PART: {
+                // Start-of-Part frames appear at 8 MiB boundaries in BURST archives.
+                // When downloading with part sizes larger than 8 MiB, we encounter
+                // these frames within a single download part.
+                //
+                // Check if this frame is at a valid 8 MiB boundary within the archive.
+                uint64_t archive_offset = state->part_start_offset + state->bytes_processed;
+                if (archive_offset % BURST_BASE_ALIGNMENT != 0) {
+                    snprintf(state->error_message, sizeof(state->error_message),
+                             "Start-of-Part frame at non-aligned offset %llu",
+                             (unsigned long long)archive_offset);
+                    state->state = STATE_ERROR;
+                    state->error_code = STREAM_PROC_ERR_INVALID_FRAME;
+                    return STREAM_PROC_ERR_INVALID_FRAME;
+                }
+
+                // Valid Start-of-Part frame - update current file's write position
+                // using the uncompressed offset from the frame
+                rc = handle_start_of_part_frame(state, ptr, info.frame_size);
+                if (rc != STREAM_PROC_SUCCESS) {
+                    return rc;
+                }
+                offset += info.frame_size;
+                state->bytes_processed += info.frame_size;
+                break;
+            }
 
             case FRAME_ZIP_DATA_DESCRIPTOR:
                 // End of current file
@@ -428,9 +451,27 @@ static int handle_start_of_part_frame(struct part_processor_state *state,
     uint64_t uncompressed_offset;
     memcpy(&uncompressed_offset, frame_data + 9, sizeof(uint64_t));
 
-    // Get continuing file metadata
+    // If we already have a file open (mid-part Start-of-Part frame), just update
+    // the uncompressed offset. This happens when downloading with part sizes
+    // larger than 8 MiB - Start-of-Part frames appear at each 8 MiB boundary.
+    if (state->current_file != NULL) {
+        state->current_file->uncompressed_offset = uncompressed_offset;
+        return STREAM_PROC_SUCCESS;
+    }
+
+    // No file open yet - this is a continuing file at the start of a downloaded part.
+    // Get the continuing file metadata from the part map.
     struct part_files *part = &state->cd_result->parts[state->part_index];
     struct file_metadata *file_meta = part->continuing_file;
+
+    if (file_meta == NULL) {
+        snprintf(state->error_message, sizeof(state->error_message),
+                 "Start-of-Part frame but no continuing file for part %u",
+                 state->part_index);
+        state->state = STATE_ERROR;
+        state->error_code = STREAM_PROC_ERR_INVALID_FRAME;
+        return STREAM_PROC_ERR_INVALID_FRAME;
+    }
 
     // Open the file for the continuing portion
     int rc = open_output_file(state, file_meta);

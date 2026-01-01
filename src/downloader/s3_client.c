@@ -223,7 +223,7 @@ int s3_client_init(struct burst_downloader *downloader) {
         .signing_config = signing_config,
         .max_active_connections_override = downloader->max_concurrent_connections,
         .memory_limit_in_bytes = 1024 * 1024 * 1024,  // 1 GiB (AWS CRT minimum)
-        .part_size = 8 * 1024 * 1024,  // 8 MiB (matches BURST alignment)
+        .part_size = downloader->part_size,  // Configurable (default 8 MiB)
         .throughput_target_gbps = 10.0,  // EC2 enhanced networking
         .enable_read_backpressure = false,
     };

@@ -22,6 +22,8 @@ static void print_usage(const char *program_name) {
     printf("  -c, --connections NUM     Max concurrent connections (default: 16)\n");
     printf("  -n, --max-concurrent-parts NUM\n");
     printf("                            Max concurrent part downloads (1-16, default: 8)\n");
+    printf("  -s, --part-size NUM       Part size in MiB (8-64, must be multiple of 8,\n");
+    printf("                            default: 8)\n");
     printf("  -p, --profile PROFILE     AWS profile name (default: AWS_PROFILE env or 'default')\n");
     printf("  -h, --help                Show this help message\n");
     printf("\nAWS Credentials:\n");
@@ -40,6 +42,7 @@ struct burst_downloader *burst_downloader_create(
     const char *output_dir,
     size_t max_connections,
     size_t max_concurrent_parts,
+    uint64_t part_size,
     const char *profile_name
 ) {
     if (!bucket || !key || !region || !output_dir) {
@@ -61,6 +64,7 @@ struct burst_downloader *burst_downloader_create(
     downloader->profile_name = profile_name ? strdup(profile_name) : NULL;
     downloader->max_concurrent_connections = max_connections;
     downloader->max_concurrent_parts = max_concurrent_parts;
+    downloader->part_size = part_size;
     downloader->object_size = 0;
     downloader->tls_ctx = NULL;
 
@@ -124,7 +128,7 @@ int burst_downloader_extract(struct burst_downloader *downloader) {
 
     // 2. Parse central directory
     printf("Parsing central directory...\n");
-    int parse_rc = central_dir_parse(cd_buffer, cd_size, object_size, &cd_result);
+    int parse_rc = central_dir_parse(cd_buffer, cd_size, object_size, downloader->part_size, &cd_result);
     if (parse_rc != CENTRAL_DIR_PARSE_SUCCESS) {
         fprintf(stderr, "Failed to parse central directory: %s\n", cd_result.error_message);
         goto cleanup;
@@ -156,6 +160,7 @@ int main(int argc, char **argv) {
     const char *profile = NULL;
     size_t max_connections = 16;
     size_t max_concurrent_parts = 8;
+    uint64_t part_size = 8 * 1024 * 1024;  // Default 8 MiB
 
     // Parse command-line options
     static struct option long_options[] = {
@@ -165,13 +170,14 @@ int main(int argc, char **argv) {
         {"output-dir", required_argument, 0, 'o'},
         {"connections", required_argument, 0, 'c'},
         {"max-concurrent-parts", required_argument, 0, 'n'},
+        {"part-size", required_argument, 0, 's'},
         {"profile", required_argument, 0, 'p'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "b:k:r:o:c:n:p:h", long_options, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "b:k:r:o:c:n:s:p:h", long_options, NULL)) != -1) {
         switch (opt) {
             case 'b':
                 bucket = optarg;
@@ -199,6 +205,15 @@ int main(int argc, char **argv) {
                     return 1;
                 }
                 break;
+            case 's': {
+                int part_size_mib = atoi(optarg);
+                if (part_size_mib < 8 || part_size_mib > 64 || (part_size_mib % 8) != 0) {
+                    fprintf(stderr, "Error: Part size must be a multiple of 8 between 8 and 64\n");
+                    return 1;
+                }
+                part_size = (uint64_t)part_size_mib * 1024 * 1024;
+                break;
+            }
             case 'p':
                 profile = optarg;
                 break;
@@ -226,6 +241,7 @@ int main(int argc, char **argv) {
     printf("Output Dir:  %s\n", output_dir);
     printf("Connections: %zu\n", max_connections);
     printf("Concurrent Parts: %zu\n", max_concurrent_parts);
+    printf("Part Size:   %llu MiB\n", (unsigned long long)(part_size / (1024 * 1024)));
     printf("\n");
 
     // Profile resolution: CLI arg > AWS_PROFILE env > NULL (defaults to "default")
@@ -236,7 +252,8 @@ int main(int argc, char **argv) {
     // Create downloader
     printf("Initializing AWS S3 client...\n");
     struct burst_downloader *downloader = burst_downloader_create(
-        bucket, key, region, output_dir, max_connections, max_concurrent_parts, profile
+        bucket, key, region, output_dir, max_connections, max_concurrent_parts,
+        part_size, profile
     );
 
     if (!downloader) {

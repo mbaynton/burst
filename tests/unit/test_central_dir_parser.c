@@ -157,7 +157,7 @@ static const uint8_t two_file_zip[] = {
 void test_find_eocd_at_end(void) {
     struct central_dir_parse_result result;
     int rc = central_dir_parse(minimal_zip, sizeof(minimal_zip),
-                               sizeof(minimal_zip), &result);
+                               sizeof(minimal_zip), BURST_BASE_PART_SIZE, &result);
 
     TEST_ASSERT_EQUAL_INT(CENTRAL_DIR_PARSE_SUCCESS, rc);
     TEST_ASSERT_EQUAL_INT(CENTRAL_DIR_PARSE_SUCCESS, result.error_code);
@@ -181,7 +181,7 @@ void test_find_eocd_with_comment(void) {
     memset(buffer + sizeof(minimal_zip), 'X', 10);
 
     struct central_dir_parse_result result;
-    int rc = central_dir_parse(buffer, sizeof(buffer), sizeof(buffer), &result);
+    int rc = central_dir_parse(buffer, sizeof(buffer), sizeof(buffer), BURST_BASE_PART_SIZE, &result);
 
     TEST_ASSERT_EQUAL_INT(CENTRAL_DIR_PARSE_SUCCESS, rc);
     TEST_ASSERT_EQUAL_UINT64(51, result.central_dir_offset);
@@ -194,7 +194,7 @@ void test_find_eocd_not_found(void) {
     memset(buffer, 0, sizeof(buffer));
 
     struct central_dir_parse_result result;
-    int rc = central_dir_parse(buffer, sizeof(buffer), sizeof(buffer), &result);
+    int rc = central_dir_parse(buffer, sizeof(buffer), sizeof(buffer), BURST_BASE_PART_SIZE, &result);
 
     TEST_ASSERT_EQUAL_INT(CENTRAL_DIR_PARSE_ERR_NO_EOCD, rc);
     TEST_ASSERT_EQUAL_INT(CENTRAL_DIR_PARSE_ERR_NO_EOCD, result.error_code);
@@ -214,7 +214,7 @@ void test_find_eocd_zip64_detected(void) {
 
     struct central_dir_parse_result result;
     int rc = central_dir_parse(buffer, sizeof(minimal_zip),
-                               sizeof(minimal_zip), &result);
+                               sizeof(minimal_zip), BURST_BASE_PART_SIZE, &result);
 
     TEST_ASSERT_EQUAL_INT(CENTRAL_DIR_PARSE_ERR_ZIP64_UNSUPPORTED, rc);
     TEST_ASSERT_TRUE(result.is_zip64);
@@ -227,7 +227,7 @@ void test_find_eocd_zip64_detected(void) {
 void test_parse_single_file(void) {
     struct central_dir_parse_result result;
     int rc = central_dir_parse(minimal_zip, sizeof(minimal_zip),
-                               sizeof(minimal_zip), &result);
+                               sizeof(minimal_zip), BURST_BASE_PART_SIZE, &result);
 
     TEST_ASSERT_EQUAL_INT(CENTRAL_DIR_PARSE_SUCCESS, rc);
     TEST_ASSERT_EQUAL_size_t(1, result.num_files);
@@ -243,7 +243,7 @@ void test_parse_single_file(void) {
 void test_parse_multiple_files(void) {
     struct central_dir_parse_result result;
     int rc = central_dir_parse(two_file_zip, sizeof(two_file_zip),
-                               sizeof(two_file_zip), &result);
+                               sizeof(two_file_zip), BURST_BASE_PART_SIZE, &result);
 
     TEST_ASSERT_EQUAL_INT(CENTRAL_DIR_PARSE_SUCCESS, rc);
     TEST_ASSERT_EQUAL_size_t(2, result.num_files);
@@ -276,7 +276,7 @@ void test_parse_empty_archive(void) {
 
     struct central_dir_parse_result result;
     int rc = central_dir_parse(empty_zip, sizeof(empty_zip),
-                               sizeof(empty_zip), &result);
+                               sizeof(empty_zip), BURST_BASE_PART_SIZE, &result);
 
     TEST_ASSERT_EQUAL_INT(CENTRAL_DIR_PARSE_SUCCESS, rc);
     TEST_ASSERT_EQUAL_size_t(0, result.num_files);
@@ -291,7 +291,7 @@ void test_parse_truncated(void) {
 
     // Adjust EOCD to point to offset that's beyond our truncated buffer
     struct central_dir_parse_result result;
-    int rc = central_dir_parse(buffer, sizeof(buffer), sizeof(buffer), &result);
+    int rc = central_dir_parse(buffer, sizeof(buffer), sizeof(buffer), BURST_BASE_PART_SIZE, &result);
 
     // Should fail because we don't have the complete central directory
     TEST_ASSERT_NOT_EQUAL(CENTRAL_DIR_PARSE_SUCCESS, rc);
@@ -306,7 +306,7 @@ void test_parse_truncated(void) {
 void test_part_index_calculation(void) {
     struct central_dir_parse_result result;
     int rc = central_dir_parse(minimal_zip, sizeof(minimal_zip),
-                               sizeof(minimal_zip), &result);
+                               sizeof(minimal_zip), BURST_BASE_PART_SIZE, &result);
 
     TEST_ASSERT_EQUAL_INT(CENTRAL_DIR_PARSE_SUCCESS, rc);
     // File at offset 0 should be in part 0
@@ -339,7 +339,7 @@ void test_part_index_at_boundary(void) {
     // For this test, let's use archive_size = buffer_size so offsets work correctly
     // and just verify that the part_index is calculated correctly from local_header_offset
     struct central_dir_parse_result result;
-    int rc = central_dir_parse(buffer, sizeof(buffer), sizeof(buffer), &result);
+    int rc = central_dir_parse(buffer, sizeof(buffer), sizeof(buffer), BURST_BASE_PART_SIZE, &result);
 
     TEST_ASSERT_EQUAL_INT(CENTRAL_DIR_PARSE_SUCCESS, rc);
     TEST_ASSERT_EQUAL_UINT32(0, result.files[0].part_index);
@@ -352,7 +352,7 @@ void test_part_index_at_boundary(void) {
 void test_part_map_single_part(void) {
     struct central_dir_parse_result result;
     int rc = central_dir_parse(minimal_zip, sizeof(minimal_zip),
-                               sizeof(minimal_zip), &result);
+                               sizeof(minimal_zip), BURST_BASE_PART_SIZE, &result);
 
     TEST_ASSERT_EQUAL_INT(CENTRAL_DIR_PARSE_SUCCESS, rc);
     TEST_ASSERT_EQUAL_size_t(1, result.num_parts);
@@ -368,7 +368,7 @@ void test_part_map_single_part(void) {
 void test_part_map_multiple_files_same_part(void) {
     struct central_dir_parse_result result;
     int rc = central_dir_parse(two_file_zip, sizeof(two_file_zip),
-                               sizeof(two_file_zip), &result);
+                               sizeof(two_file_zip), BURST_BASE_PART_SIZE, &result);
 
     TEST_ASSERT_EQUAL_INT(CENTRAL_DIR_PARSE_SUCCESS, rc);
     TEST_ASSERT_EQUAL_size_t(1, result.num_parts);
@@ -402,7 +402,7 @@ void test_entries_sorted_by_offset(void) {
     memcpy(buffer + 151, cd1, 51);
 
     struct central_dir_parse_result result;
-    int rc = central_dir_parse(buffer, sizeof(buffer), sizeof(buffer), &result);
+    int rc = central_dir_parse(buffer, sizeof(buffer), sizeof(buffer), BURST_BASE_PART_SIZE, &result);
 
     TEST_ASSERT_EQUAL_INT(CENTRAL_DIR_PARSE_SUCCESS, rc);
 
@@ -496,7 +496,7 @@ void test_continuing_file_detection(void) {
     memcpy(eocd + 16, &cd_offset, 4);
 
     struct central_dir_parse_result result;
-    int rc = central_dir_parse(buffer, sizeof(buffer), archive_size, &result);
+    int rc = central_dir_parse(buffer, sizeof(buffer), archive_size, BURST_BASE_PART_SIZE, &result);
 
     TEST_ASSERT_EQUAL_INT(CENTRAL_DIR_PARSE_SUCCESS, rc);
 
@@ -518,7 +518,7 @@ void test_continuing_file_detection(void) {
 void test_no_continuing_file(void) {
     struct central_dir_parse_result result;
     int rc = central_dir_parse(minimal_zip, sizeof(minimal_zip),
-                               sizeof(minimal_zip), &result);
+                               sizeof(minimal_zip), BURST_BASE_PART_SIZE, &result);
 
     TEST_ASSERT_EQUAL_INT(CENTRAL_DIR_PARSE_SUCCESS, rc);
     TEST_ASSERT_NULL(result.parts[0].continuing_file);
@@ -532,7 +532,7 @@ void test_no_continuing_file(void) {
 
 void test_null_buffer(void) {
     struct central_dir_parse_result result;
-    int rc = central_dir_parse(NULL, 100, 100, &result);
+    int rc = central_dir_parse(NULL, 100, 100, BURST_BASE_PART_SIZE, &result);
 
     TEST_ASSERT_EQUAL_INT(CENTRAL_DIR_PARSE_ERR_INVALID_BUFFER, rc);
 }
@@ -540,14 +540,14 @@ void test_null_buffer(void) {
 void test_zero_size(void) {
     struct central_dir_parse_result result;
     uint8_t buffer[1] = {0};
-    int rc = central_dir_parse(buffer, 0, 0, &result);
+    int rc = central_dir_parse(buffer, 0, 0, BURST_BASE_PART_SIZE, &result);
 
     TEST_ASSERT_EQUAL_INT(CENTRAL_DIR_PARSE_ERR_INVALID_BUFFER, rc);
 }
 
 void test_null_result(void) {
     int rc = central_dir_parse(minimal_zip, sizeof(minimal_zip),
-                               sizeof(minimal_zip), NULL);
+                               sizeof(minimal_zip), BURST_BASE_PART_SIZE, NULL);
 
     TEST_ASSERT_EQUAL_INT(CENTRAL_DIR_PARSE_ERR_INVALID_BUFFER, rc);
 }
@@ -560,7 +560,7 @@ void test_invalid_cd_signature(void) {
     buffer[51] = 0x00;
 
     struct central_dir_parse_result result;
-    int rc = central_dir_parse(buffer, sizeof(buffer), sizeof(buffer), &result);
+    int rc = central_dir_parse(buffer, sizeof(buffer), sizeof(buffer), BURST_BASE_PART_SIZE, &result);
 
     TEST_ASSERT_EQUAL_INT(CENTRAL_DIR_PARSE_ERR_INVALID_SIGNATURE, rc);
 
@@ -587,7 +587,7 @@ void test_free_empty_result(void) {
 void test_double_free_protection(void) {
     struct central_dir_parse_result result;
     int rc = central_dir_parse(minimal_zip, sizeof(minimal_zip),
-                               sizeof(minimal_zip), &result);
+                               sizeof(minimal_zip), BURST_BASE_PART_SIZE, &result);
     TEST_ASSERT_EQUAL_INT(CENTRAL_DIR_PARSE_SUCCESS, rc);
 
     central_dir_parse_result_free(&result);

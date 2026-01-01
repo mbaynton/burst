@@ -24,6 +24,7 @@ struct burst_downloader {
     // Configuration
     size_t max_concurrent_connections;
     size_t max_concurrent_parts;  // Max concurrent part downloads (default: 8)
+    uint64_t part_size;  // Part size in bytes (8-64 MiB, must be multiple of 8 MiB)
     char *output_dir;
     char *profile_name;  // AWS profile name for SSO and credentials
 };
@@ -36,6 +37,7 @@ struct burst_downloader *burst_downloader_create(
     const char *output_dir,
     size_t max_connections,
     size_t max_concurrent_parts,  // Max concurrent part downloads (1-16, default: 8)
+    uint64_t part_size,  // Part size in bytes (8-64 MiB, must be multiple of 8 MiB)
     const char *profile_name  // Can be NULL
 );
 void burst_downloader_destroy(struct burst_downloader *downloader);
@@ -85,6 +87,28 @@ int burst_downloader_fetch_cd_part(
 
 // Forward declaration for central directory parse result
 struct central_dir_parse_result;
+
+/**
+ * Calculate how many parts need to be downloaded from S3.
+ *
+ * The CD buffer contains the last 8 MiB of the archive. Parts that start
+ * within the CD buffer can be processed from the buffer instead of downloading.
+ * With larger part sizes (e.g., 16 MiB), the final part may start before the
+ * CD buffer begins, in which case it must be downloaded from S3.
+ *
+ * @param num_parts      Total number of parts in the archive
+ * @param part_size      Size of each part in bytes
+ * @param cd_start       Offset where CD buffer starts (archive_size - 8 MiB)
+ * @param parts_to_download  Output: number of parts to download from S3
+ * @param process_final_from_buffer  Output: whether final part comes from buffer
+ */
+void calculate_parts_to_download(
+    size_t num_parts,
+    uint64_t part_size,
+    uint64_t cd_start,
+    size_t *parts_to_download,
+    bool *process_final_from_buffer
+);
 
 /**
  * Extract BURST archive using concurrent part downloads.

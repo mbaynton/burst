@@ -427,9 +427,6 @@ int burst_downloader_test_range_get(
 // Phase 4: Central Directory Fetch and Part Streaming
 // ============================================================================
 
-// Part size constant (8 MiB)
-#define PART_SIZE (8ULL * 1024 * 1024)
-
 // Fetch central directory part using suffix-length Range header
 int burst_downloader_fetch_cd_part(
     struct burst_downloader *downloader,
@@ -578,6 +575,7 @@ struct download_coordinator {
     size_t parts_in_flight;
     size_t next_part_to_start;
     size_t total_parts;
+    size_t parts_to_download;  // May be < total_parts if final part comes from CD buffer
 
     // Completion tracking
     size_t parts_completed;
@@ -739,9 +737,8 @@ static void s3_stream_finish_callback(
         }
 
         // Start next part if available and not cancelled
-        // Note: We process parts 0 to num_parts-2, final part comes from CD buffer
         if (!coord->cancel_requested &&
-            coord->next_part_to_start + 1 < coord->total_parts) {
+            coord->next_part_to_start < coord->parts_to_download) {
             uint32_t next = (uint32_t)coord->next_part_to_start++;
             coord->parts_in_flight++;
             aws_mutex_unlock(&coord->mutex);
@@ -784,7 +781,8 @@ static int start_part_download_async(
 
     // Create processor for this part
     struct part_processor_state *processor =
-        part_processor_create(part_index, coord->cd_result, downloader->output_dir);
+        part_processor_create(part_index, coord->cd_result, downloader->output_dir,
+                              downloader->part_size);
     if (!processor) {
         fprintf(stderr, "Error: Failed to create processor for part %u\n", part_index);
         return -1;
@@ -803,8 +801,8 @@ static int start_part_download_async(
     coord->part_contexts[part_index] = ctx;
 
     // Calculate byte range for this part
-    uint64_t start = (uint64_t)part_index * PART_SIZE;
-    uint64_t end = start + PART_SIZE - 1;
+    uint64_t start = (uint64_t)part_index * downloader->part_size;
+    uint64_t end = start + downloader->part_size - 1;
 
     // Build HTTP message for GET request
     struct aws_http_message *message = aws_http_message_new_request(downloader->allocator);
@@ -896,7 +894,8 @@ int burst_downloader_extract_concurrent(
         if (num_parts == 1) {
             printf("Processing single part from buffer...\n");
             struct part_processor_state *processor =
-                part_processor_create(0, cd_result, downloader->output_dir);
+                part_processor_create(0, cd_result, downloader->output_dir,
+                                      downloader->part_size);
             if (!processor) {
                 fprintf(stderr, "Failed to create processor for single part\n");
                 return -1;
@@ -947,13 +946,15 @@ int burst_downloader_extract_concurrent(
         return -1;
     }
 
-    // Calculate how many parts to download (all except final)
-    size_t parts_to_download = num_parts - 1;
+    // Calculate how many parts to download vs process from CD buffer
+    bool process_final_from_buffer;
+    calculate_parts_to_download(num_parts, downloader->part_size, cd_start,
+                                &coord.parts_to_download, &process_final_from_buffer);
 
-    // Start initial batch (up to max_concurrent, but not more than parts_to_download)
+    // Start initial batch (up to max_concurrent, but not more than coord.parts_to_download)
     aws_mutex_lock(&coord.mutex);
     while (coord.parts_in_flight < coord.max_concurrent &&
-           coord.next_part_to_start < parts_to_download) {
+           coord.next_part_to_start < coord.parts_to_download) {
         uint32_t part_idx = (uint32_t)coord.next_part_to_start++;
         coord.parts_in_flight++;
 
@@ -985,23 +986,27 @@ int burst_downloader_extract_concurrent(
         fprintf(stderr, "Error during concurrent download: %s\n", coord.first_error_message);
     }
 
-    // Process final part from CD buffer (if no errors)
-    if (result == 0 && num_parts > 0) {
+    // Process final part from CD buffer (if applicable and no errors)
+    // When using larger part sizes (e.g., 16 MiB), the final part may have been
+    // downloaded from S3 instead of being processed from the CD buffer.
+    if (result == 0 && process_final_from_buffer && num_parts > 0) {
         uint32_t final_idx = (uint32_t)(num_parts - 1);
+        uint64_t final_part_start = (uint64_t)final_idx * downloader->part_size;
         printf("Processing final part %u/%zu from buffer...\n", final_idx + 1, num_parts);
 
         struct part_processor_state *processor =
-            part_processor_create(final_idx, cd_result, downloader->output_dir);
+            part_processor_create(final_idx, cd_result, downloader->output_dir,
+                                  downloader->part_size);
         if (!processor) {
             fprintf(stderr, "Failed to create processor for final part\n");
             result = -1;
         } else {
-            uint64_t final_part_start = (uint64_t)final_idx * PART_SIZE;
+            // final_part_start is guaranteed >= cd_start here (we checked via calculate_parts_to_download)
             uint64_t data_end = cd_result->central_dir_offset;
 
             if (data_end > final_part_start) {
-                size_t offset_in_buffer = final_part_start - cd_start;
-                size_t data_size = data_end - final_part_start;
+                size_t offset_in_buffer = (size_t)(final_part_start - cd_start);
+                size_t data_size = (size_t)(data_end - final_part_start);
 
                 int proc_rc = part_processor_process_data(
                     processor, cd_buffer + offset_in_buffer, data_size);

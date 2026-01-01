@@ -91,8 +91,8 @@
 #define CENTRAL_DIR_PARSE_ERR_MEMORY -5
 #define CENTRAL_DIR_PARSE_ERR_ZIP64_UNSUPPORTED -6
 
-// 8 MiB part size constant
-#define PART_SIZE (8 * 1024 * 1024)
+// Base part size constant (8 MiB) - used for BURST archive alignment
+#define BURST_BASE_PART_SIZE (8 * 1024 * 1024)
 
 /**
  * File metadata extracted from the central directory.
@@ -180,11 +180,13 @@ struct central_dir_parse_result {
  * @param buffer       Buffer containing end of ZIP file (must include EOCD and central directory)
  * @param buffer_size  Size of buffer in bytes
  * @param archive_size Total size of the archive (from S3 HEAD request), used to calculate num_parts
+ * @param part_size    Part size in bytes (must be multiple of 8 MiB)
  * @param result       Output structure to populate with parsed data
  * @return CENTRAL_DIR_PARSE_SUCCESS on success, or error code on failure
  */
 int central_dir_parse(const uint8_t *buffer, size_t buffer_size,
                       uint64_t archive_size,
+                      uint64_t part_size,
                       struct central_dir_parse_result *result);
 
 /**
