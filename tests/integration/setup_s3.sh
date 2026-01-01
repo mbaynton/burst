@@ -348,8 +348,9 @@ create_fixture "medium" 25 $((500 * 1024))
 # large: ~20 MiB (3 parts) - 40 files x 500 KiB = 20 MiB
 create_fixture "large" 40 $((500 * 1024))
 
-# compressible-many-files: many small files with compressible text data, min 10 MiB archive
-create_compressible_fixture "compressible-many-files" $((10 * 1024 * 1024))
+# compressible-many-files: many small files with compressible text data, min 40 MiB archive
+# (large enough to test 16 MiB part size with multiple concurrent parts)
+create_compressible_fixture "compressible-many-files" $((40 * 1024 * 1024))
 
 # Print summary
 echo ""

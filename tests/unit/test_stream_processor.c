@@ -292,7 +292,7 @@ void test_single_frame_single_callback(void) {
     struct central_dir_parse_result *cd = create_test_cd_result("test.txt", 0, zstd_size, 100);
 
     // Create processor
-    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir);
+    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir, BURST_BASE_PART_SIZE);
     TEST_ASSERT_NOT_NULL(state);
 
     // Process data
@@ -330,7 +330,7 @@ void test_frame_spanning_callbacks_partial_header(void) {
     // Create central directory result
     struct central_dir_parse_result *cd = create_test_cd_result("test.txt", 0, zstd_size, 100);
 
-    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir);
+    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir, BURST_BASE_PART_SIZE);
     TEST_ASSERT_NOT_NULL(state);
 
     // Split at middle of Zstd frame header (after magic, before size is known)
@@ -373,7 +373,7 @@ void test_frame_spanning_callbacks_partial_payload(void) {
     offset += create_data_descriptor(buffer + offset, 0, (uint32_t)zstd_size, 100);
 
     struct central_dir_parse_result *cd = create_test_cd_result("test.txt", 0, zstd_size, 100);
-    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir);
+    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir, BURST_BASE_PART_SIZE);
     TEST_ASSERT_NOT_NULL(state);
 
     // Split in middle of Zstd frame payload (after header is complete)
@@ -418,7 +418,7 @@ void test_multiple_frames_single_callback(void) {
     offset += create_data_descriptor(buffer + offset, 0, total_compressed, 300);
 
     struct central_dir_parse_result *cd = create_test_cd_result("test.txt", 0, total_compressed, 300);
-    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir);
+    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir, BURST_BASE_PART_SIZE);
     TEST_ASSERT_NOT_NULL(state);
 
     int rc = part_processor_process_data(state, buffer, offset);
@@ -469,7 +469,7 @@ void test_start_of_part_metadata(void) {
     cd->parts[1].entries = NULL;
     cd->parts[1].continuing_file = &cd->files[0];  // Continuing from part 0
 
-    struct part_processor_state *state = part_processor_create(1, cd, test_output_dir);
+    struct part_processor_state *state = part_processor_create(1, cd, test_output_dir, BURST_BASE_PART_SIZE);
     TEST_ASSERT_NOT_NULL(state);
 
     int rc = part_processor_process_data(state, buffer, offset);
@@ -503,7 +503,7 @@ void test_local_header_parsing(void) {
     offset += create_data_descriptor(buffer + offset, 0, (uint32_t)zstd_size, 50);
 
     struct central_dir_parse_result *cd = create_test_cd_result(long_filename, 0, zstd_size, 50);
-    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir);
+    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir, BURST_BASE_PART_SIZE);
     TEST_ASSERT_NOT_NULL(state);
 
     int rc = part_processor_process_data(state, buffer, offset);
@@ -532,7 +532,7 @@ void test_data_descriptor_closes_file(void) {
     offset += create_data_descriptor(buffer + offset, 0xDEADBEEF, (uint32_t)zstd_size, 100);
 
     struct central_dir_parse_result *cd = create_test_cd_result("test.txt", 0, zstd_size, 100);
-    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir);
+    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir, BURST_BASE_PART_SIZE);
 
     // Process up to just before descriptor
     int rc = part_processor_process_data(state, buffer, desc_offset);
@@ -566,7 +566,7 @@ void test_empty_file_handling(void) {
     offset += create_data_descriptor(buffer + offset, 0, (uint32_t)zstd_size, 0);
 
     struct central_dir_parse_result *cd = create_test_cd_result("empty.txt", 0, zstd_size, 0);
-    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir);
+    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir, BURST_BASE_PART_SIZE);
     TEST_ASSERT_NOT_NULL(state);
 
     int rc = part_processor_process_data(state, buffer, offset);
@@ -608,7 +608,7 @@ void test_skippable_padding_frame_skipping(void) {
     struct central_dir_parse_result *cd = create_test_cd_result("test.txt", 40, zstd_size, 100);
     cd->parts[0].entries[0].offset_in_part = 40;
 
-    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir);
+    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir, BURST_BASE_PART_SIZE);
     TEST_ASSERT_NOT_NULL(state);
 
     int rc = part_processor_process_data(state, buffer, offset);
@@ -635,11 +635,11 @@ void test_null_arguments_to_create(void) {
     struct central_dir_parse_result *cd = create_test_cd_result("test.txt", 0, 100, 100);
 
     // NULL cd_result should return NULL
-    struct part_processor_state *state = part_processor_create(0, NULL, test_output_dir);
+    struct part_processor_state *state = part_processor_create(0, NULL, test_output_dir, BURST_BASE_PART_SIZE);
     TEST_ASSERT_NULL(state);
 
     // NULL output_dir should return NULL
-    state = part_processor_create(0, cd, NULL);
+    state = part_processor_create(0, cd, NULL, BURST_BASE_PART_SIZE);
     TEST_ASSERT_NULL(state);
 
     free_test_cd_result(cd);
@@ -650,11 +650,11 @@ void test_invalid_part_index(void) {
     struct central_dir_parse_result *cd = create_test_cd_result("test.txt", 0, 100, 100);
     // cd->num_parts is 1, so index 5 is invalid
 
-    struct part_processor_state *state = part_processor_create(5, cd, test_output_dir);
+    struct part_processor_state *state = part_processor_create(5, cd, test_output_dir, BURST_BASE_PART_SIZE);
     TEST_ASSERT_NULL(state);
 
     // Also test exactly at boundary
-    state = part_processor_create(1, cd, test_output_dir);
+    state = part_processor_create(1, cd, test_output_dir, BURST_BASE_PART_SIZE);
     TEST_ASSERT_NULL(state);
 
     free_test_cd_result(cd);
@@ -664,7 +664,7 @@ void test_invalid_part_index(void) {
 void test_null_arguments_to_process_data(void) {
     uint8_t buffer[64];
     struct central_dir_parse_result *cd = create_test_cd_result("test.txt", 0, 100, 100);
-    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir);
+    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir, BURST_BASE_PART_SIZE);
     TEST_ASSERT_NOT_NULL(state);
 
     // NULL state should return error
@@ -715,7 +715,7 @@ void test_btrfs_write_failure(void) {
     offset += create_data_descriptor(buffer + offset, 0, (uint32_t)zstd_size, 100);
 
     struct central_dir_parse_result *cd = create_test_cd_result("test.txt", 0, zstd_size, 100);
-    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir);
+    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir, BURST_BASE_PART_SIZE);
     TEST_ASSERT_NOT_NULL(state);
 
     int rc = part_processor_process_data(state, buffer, offset);
@@ -808,7 +808,7 @@ void test_multiple_files_in_single_part(void) {
         "file1.txt", file1_start, zstd1_size, 100,
         "file2.txt", file2_start, zstd2_size, 200);
 
-    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir);
+    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir, BURST_BASE_PART_SIZE);
     TEST_ASSERT_NOT_NULL(state);
 
     int rc = part_processor_process_data(state, buffer, offset);
@@ -850,7 +850,7 @@ void test_wrong_frame_at_continuing_file(void) {
     cd->parts[1].entries = NULL;
     cd->parts[1].continuing_file = &cd->files[0];  // Expects Start-of-Part
 
-    struct part_processor_state *state = part_processor_create(1, cd, test_output_dir);
+    struct part_processor_state *state = part_processor_create(1, cd, test_output_dir, BURST_BASE_PART_SIZE);
     TEST_ASSERT_NOT_NULL(state);
 
     int rc = part_processor_process_data(state, buffer, offset);
@@ -873,7 +873,7 @@ void test_wrong_frame_at_local_header(void) {
     offset += zstd_size;
 
     struct central_dir_parse_result *cd = create_test_cd_result("test.txt", 0, zstd_size, 100);
-    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir);
+    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir, BURST_BASE_PART_SIZE);
     TEST_ASSERT_NOT_NULL(state);
 
     int rc = part_processor_process_data(state, buffer, offset);
@@ -894,7 +894,7 @@ void test_process_data_in_error_state(void) {
     offset = 4;
 
     struct central_dir_parse_result *cd = create_test_cd_result("test.txt", 0, 100, 100);
-    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir);
+    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir, BURST_BASE_PART_SIZE);
     TEST_ASSERT_NOT_NULL(state);
 
     // First call should fail and put state in ERROR
@@ -920,7 +920,7 @@ void test_process_data_in_done_state(void) {
     offset += create_data_descriptor(buffer + offset, 0, (uint32_t)zstd_size, 100);
 
     struct central_dir_parse_result *cd = create_test_cd_result("test.txt", 0, zstd_size, 100);
-    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir);
+    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir, BURST_BASE_PART_SIZE);
     TEST_ASSERT_NOT_NULL(state);
 
     // Process all data
@@ -954,7 +954,7 @@ void test_finalize_with_incomplete_frame(void) {
     offset += 4;
 
     struct central_dir_parse_result *cd = create_test_cd_result("test.txt", 0, 100, 100);
-    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir);
+    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir, BURST_BASE_PART_SIZE);
     TEST_ASSERT_NOT_NULL(state);
 
     // Process data - should buffer the partial frame
@@ -982,7 +982,7 @@ void test_unexpected_start_of_part_mid_processing(void) {
     offset += create_start_of_part_frame(buffer + offset, 500);
 
     struct central_dir_parse_result *cd = create_test_cd_result("test.txt", 0, zstd_size, 100);
-    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir);
+    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir, BURST_BASE_PART_SIZE);
     TEST_ASSERT_NOT_NULL(state);
 
     int rc = part_processor_process_data(state, buffer, offset);
@@ -1001,7 +1001,7 @@ void test_unknown_frame_magic(void) {
     memcpy(buffer, &unknown_magic, 4);
 
     struct central_dir_parse_result *cd = create_test_cd_result("test.txt", 0, 100, 100);
-    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir);
+    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir, BURST_BASE_PART_SIZE);
     TEST_ASSERT_NOT_NULL(state);
 
     int rc = part_processor_process_data(state, buffer, sizeof(buffer));
@@ -1041,7 +1041,7 @@ void test_zstd_frame_without_content_size(void) {
     // Optional checksum (none in this case since Content_Checksum=0)
 
     struct central_dir_parse_result *cd = create_test_cd_result("test.txt", 0, 100, 100);
-    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir);
+    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir, BURST_BASE_PART_SIZE);
     TEST_ASSERT_NOT_NULL(state);
 
     int rc = part_processor_process_data(state, buffer, offset);
@@ -1079,7 +1079,7 @@ void test_split_before_magic_number(void) {
     offset += create_data_descriptor(buffer + offset, 0, (uint32_t)zstd_size, 100);
 
     struct central_dir_parse_result *cd = create_test_cd_result("test.txt", 0, zstd_size, 100);
-    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir);
+    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir, BURST_BASE_PART_SIZE);
     TEST_ASSERT_NOT_NULL(state);
 
     // First callback: only 2 bytes (less than 4-byte magic)
@@ -1113,7 +1113,7 @@ void test_split_mid_zip_local_header(void) {
     offset += create_data_descriptor(buffer + offset, 0, (uint32_t)zstd_size, 100);
 
     struct central_dir_parse_result *cd = create_test_cd_result("test.txt", 0, zstd_size, 100);
-    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir);
+    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir, BURST_BASE_PART_SIZE);
     TEST_ASSERT_NOT_NULL(state);
 
     // Split at byte 10 (magic + 6 bytes, but header is 30+ bytes)
@@ -1152,7 +1152,7 @@ void test_split_mid_burst_skippable_header(void) {
 
     struct central_dir_parse_result *cd = create_test_cd_result("test.txt", local_header_start, zstd_size, 100);
     cd->parts[0].entries[0].offset_in_part = local_header_start;
-    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir);
+    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir, BURST_BASE_PART_SIZE);
     TEST_ASSERT_NOT_NULL(state);
 
     // Split at byte 6 (magic seen, but payload_size field incomplete)
@@ -1191,7 +1191,7 @@ void test_split_mid_burst_skippable_payload(void) {
 
     struct central_dir_parse_result *cd = create_test_cd_result("test.txt", local_header_start, zstd_size, 100);
     cd->parts[0].entries[0].offset_in_part = local_header_start;
-    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir);
+    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir, BURST_BASE_PART_SIZE);
     TEST_ASSERT_NOT_NULL(state);
 
     // Split at byte 20 (header complete at 8, payload partial at 12 bytes)
@@ -1225,7 +1225,7 @@ void test_split_mid_local_header_variable_fields(void) {
     offset += create_data_descriptor(buffer + offset, 0, (uint32_t)zstd_size, 100);
 
     struct central_dir_parse_result *cd = create_test_cd_result(long_filename, 0, zstd_size, 100);
-    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir);
+    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir, BURST_BASE_PART_SIZE);
     TEST_ASSERT_NOT_NULL(state);
 
     // Split at byte 35 (fixed header is 30 bytes, so 5 bytes into filename)
@@ -1257,7 +1257,7 @@ void test_split_at_multiple_boundaries(void) {
     offset += create_data_descriptor(buffer + offset, 0, (uint32_t)zstd_size, 100);
 
     struct central_dir_parse_result *cd = create_test_cd_result("test.txt", 0, zstd_size, 100);
-    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir);
+    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir, BURST_BASE_PART_SIZE);
     TEST_ASSERT_NOT_NULL(state);
 
     // Feed data 3 bytes at a time

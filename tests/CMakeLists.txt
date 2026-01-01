@@ -205,6 +205,19 @@ target_link_libraries(test_frame_parser
 )
 add_test(NAME test_frame_parser COMMAND test_frame_parser)
 
+# Parts calculation unit test (tests calculate_parts_to_download)
+add_executable(test_parts_calculation
+    unit/test_parts_calculation.c
+    ../src/downloader/parts_calculation.c
+)
+target_include_directories(test_parts_calculation PRIVATE
+    ../include
+)
+target_link_libraries(test_parts_calculation
+    unity
+)
+add_test(NAME test_parts_calculation COMMAND test_parts_calculation)
+
 # Downloader integration tests (C-based)
 add_executable(test_central_dir_parser_integration integration/test_central_dir_parser.c)
 target_link_libraries(test_central_dir_parser_integration

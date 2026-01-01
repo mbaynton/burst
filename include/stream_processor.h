@@ -86,12 +86,13 @@ struct file_context {
 };
 
 /**
- * State for processing a single 8 MiB part.
+ * State for processing a single part.
  * Handles frame boundary spanning and maintains context.
  */
 struct part_processor_state {
     // Part identification
     uint32_t part_index;
+    uint64_t part_size;             // Part size in bytes
     uint64_t part_start_offset;     // Archive offset where this part starts
 
     // Central directory metadata (borrowed reference, not owned)
@@ -143,12 +144,14 @@ struct frame_info {
  * @param part_index Part number to process (0-indexed)
  * @param cd_result Central directory parse result (borrowed, not owned)
  * @param output_dir Base directory for extracted files
+ * @param part_size Part size in bytes
  * @return Allocated state, or NULL on error
  */
 struct part_processor_state *part_processor_create(
     uint32_t part_index,
     struct central_dir_parse_result *cd_result,
-    const char *output_dir);
+    const char *output_dir,
+    uint64_t part_size);
 
 /**
  * Process incoming data from S3 callback.

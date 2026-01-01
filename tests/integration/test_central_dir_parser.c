@@ -93,7 +93,7 @@ static void test_zip_file(const char *zip_name, const char *description) {
 
     // Parse the central directory
     struct central_dir_parse_result result;
-    int rc = central_dir_parse(buffer, file_size, file_size, &result);
+    int rc = central_dir_parse(buffer, file_size, file_size, BURST_BASE_PART_SIZE, &result);
 
     TEST_ASSERT_EQUAL_INT_MESSAGE(CENTRAL_DIR_PARSE_SUCCESS, rc,
         result.error_message[0] ? result.error_message : "Parse failed");

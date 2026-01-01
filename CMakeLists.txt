@@ -185,6 +185,7 @@ if(BUILD_DOWNLOADER)
         src/downloader/main.c
         src/downloader/s3_client.c
         src/downloader/s3_operations.c
+        src/downloader/parts_calculation.c
         src/downloader/central_dir_parser.c
         src/downloader/stream_processor.c
         src/downloader/frame_parser.c

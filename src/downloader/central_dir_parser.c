@@ -99,6 +99,7 @@ static int parse_eocd(const uint8_t *buffer, size_t buffer_size,
  * @param buffer_offset Offset within the archive that buffer[0] represents
  * @param num_entries  Number of entries to parse
  * @param cd_size      Size of central directory
+ * @param part_size    Part size in bytes
  * @param files        Output: array of file metadata
  * @param num_files    Output: number of files parsed
  * @return Error code
@@ -107,6 +108,7 @@ static int parse_central_directory(
     const uint8_t *buffer, size_t buffer_size,
     uint64_t cd_offset, uint64_t buffer_offset,
     uint32_t num_entries, uint32_t cd_size,
+    uint64_t part_size,
     struct file_metadata **files, size_t *num_files)
 {
     // Calculate where CD starts within our buffer
@@ -161,7 +163,7 @@ static int parse_central_directory(
         file_array[i].compression_method = header->compression_method;
 
         // Calculate part index
-        file_array[i].part_index = (uint32_t)(header->local_header_offset / PART_SIZE);
+        file_array[i].part_index = (uint32_t)(header->local_header_offset / part_size);
 
         // Move past fixed header
         ptr += sizeof(struct zip_central_header);
@@ -223,6 +225,7 @@ static int compare_part_file_entries(const void *a, const void *b) {
  * @param files        Array of file metadata (non-const because we store pointers to elements)
  * @param num_files    Number of files
  * @param archive_size Total archive size
+ * @param part_size    Part size in bytes
  * @param parts        Output: array of part_files structures
  * @param num_parts    Output: number of parts
  * @return Error code
@@ -230,10 +233,11 @@ static int compare_part_file_entries(const void *a, const void *b) {
 static int build_part_map(
     struct file_metadata *files, size_t num_files,
     uint64_t archive_size,
+    uint64_t part_size,
     struct part_files **parts_out, size_t *num_parts_out)
 {
     // Calculate number of parts (round up)
-    size_t num_parts = (size_t)((archive_size + PART_SIZE - 1) / PART_SIZE);
+    size_t num_parts = (size_t)((archive_size + part_size - 1) / part_size);
     if (num_parts == 0) {
         num_parts = 1;  // At least one part for empty archives
     }
@@ -289,7 +293,7 @@ static int build_part_map(
             size_t entry_idx = counts[part_idx]++;
             parts[part_idx].entries[entry_idx].file_index = i;
             parts[part_idx].entries[entry_idx].offset_in_part =
-                files[i].local_header_offset % PART_SIZE;
+                files[i].local_header_offset % part_size;
         }
     }
 
@@ -311,7 +315,7 @@ static int build_part_map(
     // Determine continuing_file for each part
     // A file continues into part N if its data extends beyond the part boundary
     for (size_t part_idx = 1; part_idx < num_parts; part_idx++) {
-        uint64_t part_start = (uint64_t)part_idx * PART_SIZE;
+        uint64_t part_start = (uint64_t)part_idx * part_size;
 
         // Search all files to find one that spans into this part
         for (size_t i = 0; i < num_files; i++) {
@@ -338,6 +342,7 @@ static int build_part_map(
 
 int central_dir_parse(const uint8_t *buffer, size_t buffer_size,
                       uint64_t archive_size,
+                      uint64_t part_size,
                       struct central_dir_parse_result *result) {
     // Initialize result structure
     if (result) {
@@ -393,7 +398,7 @@ int central_dir_parse(const uint8_t *buffer, size_t buffer_size,
 
     // Parse central directory
     rc = parse_central_directory(buffer, buffer_size, cd_offset, buffer_offset,
-                                 num_entries, cd_size,
+                                 num_entries, cd_size, part_size,
                                  &result->files, &result->num_files);
     if (rc != CENTRAL_DIR_PARSE_SUCCESS) {
         result->error_code = rc;
@@ -404,7 +409,7 @@ int central_dir_parse(const uint8_t *buffer, size_t buffer_size,
     }
 
     // Build part mapping
-    rc = build_part_map(result->files, result->num_files, archive_size,
+    rc = build_part_map(result->files, result->num_files, archive_size, part_size,
                         &result->parts, &result->num_parts);
     if (rc != CENTRAL_DIR_PARSE_SUCCESS) {
         // Cleanup files on error
