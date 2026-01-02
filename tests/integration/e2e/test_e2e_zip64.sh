@@ -110,7 +110,26 @@ if ! aws s3api head-object --bucket "$BURST_TEST_BUCKET" --key "$FIXTURE_KEY" --
 fi
 echo -e "${GREEN}✓${NC} Found fixture in S3"
 
-# Download and extract fixture TO BTRFS mount (required for reflinks)
+# Set CAP_SYS_ADMIN capability on burst-downloader for BTRFS encoded writes
+echo "Setting CAP_SYS_ADMIN capability on burst-downloader..."
+current_caps=$(getcap "$BURST_DOWNLOADER" 2>/dev/null || echo "")
+
+if [[ "$current_caps" != *"cap_sys_admin"* ]]; then
+    if ! sudo setcap 'cap_sys_admin=ep' "$BURST_DOWNLOADER"; then
+        echo -e "${RED}✗ Failed to set CAP_SYS_ADMIN capability${NC}"
+        echo "sudo access is required for BTRFS encoded writes"
+        exit 1
+    fi
+fi
+
+# Verify capability was set
+if ! getcap "$BURST_DOWNLOADER" | grep -q "cap_sys_admin"; then
+    echo -e "${RED}✗ CAP_SYS_ADMIN capability not set on burst-downloader${NC}"
+    exit 1
+fi
+echo -e "${GREEN}✓${NC} CAP_SYS_ADMIN capability set"
+
+# Download and extract fixture to BTRFS mount (required for reflinks)
 SEED_DIR="$BTRFS_MOUNT_DIR/seed_$TEST_ID"
 mkdir -p "$SEED_DIR"
 echo "Downloading and extracting fixture to BTRFS mount..."
