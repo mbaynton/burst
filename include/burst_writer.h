@@ -103,6 +103,20 @@ int burst_writer_add_symlink(struct burst_writer *writer,
                               uint32_t uid,
                               uint32_t gid);
 
+// Add a directory to the archive
+// lfh: Fully-constructed local file header (with STORE method, zero sizes, trailing slash)
+//      The LFH flags should NOT have bit 3 set (no data descriptor)
+// lfh_len: Total size of local file header including filename and extra fields
+// unix_mode: Unix mode (MUST have S_IFDIR set, e.g., 040755)
+// uid: Unix user ID for extra field
+// gid: Unix group ID for extra field
+int burst_writer_add_directory(struct burst_writer *writer,
+                                struct zip_local_header *lfh,
+                                int lfh_len,
+                                uint32_t unix_mode,
+                                uint32_t uid,
+                                uint32_t gid);
+
 int burst_writer_finalize(struct burst_writer *writer);
 
 // Internal functions

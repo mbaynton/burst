@@ -17,6 +17,7 @@ struct file_list {
     char **names;      // Array of archive names (relative paths)
     char **targets;    // Array of symlink targets (NULL for non-symlinks)
     struct stat *stats;  // Array of stat info for each file
+    bool *is_directory;  // Array of directory flags
     size_t count;
     size_t capacity;
 };
@@ -30,11 +31,13 @@ static struct file_list *file_list_create(void) {
     list->names = malloc(list->capacity * sizeof(char *));
     list->targets = malloc(list->capacity * sizeof(char *));
     list->stats = malloc(list->capacity * sizeof(struct stat));
-    if (!list->paths || !list->names || !list->targets || !list->stats) {
+    list->is_directory = malloc(list->capacity * sizeof(bool));
+    if (!list->paths || !list->names || !list->targets || !list->stats || !list->is_directory) {
         free(list->paths);
         free(list->names);
         free(list->targets);
         free(list->stats);
+        free(list->is_directory);
         free(list);
         return NULL;
     }
@@ -52,25 +55,28 @@ static void file_list_destroy(struct file_list *list) {
     free(list->names);
     free(list->targets);
     free(list->stats);
+    free(list->is_directory);
     free(list);
 }
 
-// target may be NULL for non-symlinks
+// target may be NULL for non-symlinks, is_dir indicates if this is a directory entry
 static int file_list_add(struct file_list *list, const char *path, const char *name,
-                          const struct stat *st, const char *target) {
+                          const struct stat *st, const char *target, bool is_dir) {
     if (list->count >= list->capacity) {
         size_t new_capacity = list->capacity * 2;
         char **new_paths = realloc(list->paths, new_capacity * sizeof(char *));
         char **new_names = realloc(list->names, new_capacity * sizeof(char *));
         char **new_targets = realloc(list->targets, new_capacity * sizeof(char *));
         struct stat *new_stats = realloc(list->stats, new_capacity * sizeof(struct stat));
-        if (!new_paths || !new_names || !new_targets || !new_stats) {
+        bool *new_is_directory = realloc(list->is_directory, new_capacity * sizeof(bool));
+        if (!new_paths || !new_names || !new_targets || !new_stats || !new_is_directory) {
             return -1;
         }
         list->paths = new_paths;
         list->names = new_names;
         list->targets = new_targets;
         list->stats = new_stats;
+        list->is_directory = new_is_directory;
         list->capacity = new_capacity;
     }
     list->paths[list->count] = strdup(path);
@@ -84,6 +90,7 @@ static int file_list_add(struct file_list *list, const char *path, const char *n
         return -1;
     }
     list->stats[list->count] = *st;  // Copy stat struct
+    list->is_directory[list->count] = is_dir;
     list->count++;
     return 0;
 }
@@ -150,7 +157,28 @@ static int collect_files_recursive(struct file_list *list,
         }
 
         if (S_ISDIR(st.st_mode)) {
-            // Recurse into subdirectory
+            // Build directory archive name with trailing slash
+            size_t dir_name_len = name_len + 2;  // +1 for slash, +1 for null
+            char *dir_archive_name = malloc(dir_name_len);
+            if (!dir_archive_name) {
+                free(full_path);
+                free(archive_name);
+                closedir(dir);
+                return -1;
+            }
+            snprintf(dir_archive_name, dir_name_len, "%s/", archive_name);
+
+            // Add directory entry to list BEFORE recursing into it (pre-order)
+            if (file_list_add(list, full_path, dir_archive_name, &st, NULL, true) != 0) {
+                free(full_path);
+                free(archive_name);
+                free(dir_archive_name);
+                closedir(dir);
+                return -1;
+            }
+            free(dir_archive_name);
+
+            // Now recurse into subdirectory
             int rc = collect_files_recursive(list, full_path, archive_name);
             free(full_path);
             free(archive_name);
@@ -160,7 +188,7 @@ static int collect_files_recursive(struct file_list *list,
             }
         } else if (S_ISREG(st.st_mode)) {
             // Add regular file to list
-            if (file_list_add(list, full_path, archive_name, &st, NULL) != 0) {
+            if (file_list_add(list, full_path, archive_name, &st, NULL, false) != 0) {
                 free(full_path);
                 free(archive_name);
                 closedir(dir);
@@ -181,7 +209,7 @@ static int collect_files_recursive(struct file_list *list,
             target_buf[target_len] = '\0';
 
             // Add symlink to list
-            if (file_list_add(list, full_path, archive_name, &st, target_buf) != 0) {
+            if (file_list_add(list, full_path, archive_name, &st, target_buf, false) != 0) {
                 free(full_path);
                 free(archive_name);
                 closedir(dir);
@@ -322,6 +350,72 @@ static struct zip_local_header* build_symlink_local_file_header(const char *file
     return lfh;
 }
 
+// Build a local file header for a directory
+// Directories:
+// - Use STORE method (no compression)
+// - Have zero compressed and uncompressed size
+// - Have CRC32 of zero
+// - Filename MUST end with '/'
+// - Do NOT use data descriptor (all values known upfront)
+static struct zip_local_header* build_directory_local_file_header(
+    const char *dirname,
+    uint32_t uid,
+    uint32_t gid,
+    time_t mtime,
+    int *lfh_len_out)
+{
+    // Verify dirname ends with '/'
+    size_t dirname_len = strlen(dirname);
+    if (dirname_len == 0 || dirname[dirname_len - 1] != '/') {
+        fprintf(stderr, "Error: Directory name must end with '/': %s\n", dirname);
+        return NULL;
+    }
+
+    // Get modification time (use provided mtime for preserving directory timestamps)
+    uint16_t mod_time, mod_date;
+    dos_datetime_from_time_t(mtime, &mod_time, &mod_date);
+
+    // Build Unix extra field (0x7875) for uid/gid
+    uint8_t extra_field[16];
+    size_t extra_field_len = build_unix_extra_field(extra_field, sizeof(extra_field), uid, gid);
+
+    // Calculate total size
+    size_t total_size = sizeof(struct zip_local_header) + dirname_len + extra_field_len;
+
+    // Allocate buffer
+    struct zip_local_header *lfh = malloc(total_size);
+    if (!lfh) {
+        return NULL;
+    }
+
+    // Fill in header
+    memset(lfh, 0, sizeof(struct zip_local_header));
+    lfh->signature = ZIP_LOCAL_FILE_HEADER_SIG;
+    lfh->version_needed = ZIP_VERSION_STORE;
+    lfh->flags = 0;  // NO data descriptor - all values known
+    lfh->compression_method = ZIP_METHOD_STORE;
+    lfh->last_mod_time = mod_time;
+    lfh->last_mod_date = mod_date;
+    lfh->crc32 = 0;  // Zero CRC for directories
+    lfh->compressed_size = 0;    // Zero size
+    lfh->uncompressed_size = 0;  // Zero size
+    lfh->filename_length = dirname_len;
+    lfh->extra_field_length = extra_field_len;
+
+    // Copy dirname immediately after header
+    uint8_t *ptr = (uint8_t*)lfh + sizeof(struct zip_local_header);
+    memcpy(ptr, dirname, dirname_len);
+    ptr += dirname_len;
+
+    // Copy extra field after dirname
+    if (extra_field_len > 0) {
+        memcpy(ptr, extra_field, extra_field_len);
+    }
+
+    *lfh_len_out = total_size;
+    return lfh;
+}
+
 static void print_usage(const char *program_name) {
     printf("Usage: %s [OPTIONS] -o OUTPUT_FILE INPUT...\n", program_name);
     printf("\nCreate a BURST-optimized ZIP archive.\n");
@@ -407,11 +501,11 @@ int main(int argc, char **argv) {
         }
 
         if (files->count == 0) {
-            fprintf(stderr, "Error: No files found in directory\n");
+            fprintf(stderr, "Error: No files or directories found in directory\n");
             file_list_destroy(files);
             return 1;
         }
-        printf("Found %zu files\n\n", files->count);
+        printf("Found %zu entries (files and directories)\n\n", files->count);
     } else {
         // Individual files mode
         for (int i = optind; i < argc; i++) {
@@ -446,13 +540,13 @@ int main(int argc, char **argv) {
                 }
                 target_buf[target_len] = '\0';
 
-                if (file_list_add(files, input_path, filename, &st, target_buf) != 0) {
+                if (file_list_add(files, input_path, filename, &st, target_buf, false) != 0) {
                     fprintf(stderr, "Error: Failed to add symlink to list\n");
                     file_list_destroy(files);
                     return 1;
                 }
             } else if (S_ISREG(st.st_mode)) {
-                if (file_list_add(files, input_path, filename, &st, NULL) != 0) {
+                if (file_list_add(files, input_path, filename, &st, NULL, false) != 0) {
                     fprintf(stderr, "Error: Failed to add file to list\n");
                     file_list_destroy(files);
                     return 1;
@@ -502,8 +596,37 @@ int main(int argc, char **argv) {
         const char *archive_name = files->names[i];
         const char *symlink_target = files->targets[i];
         const struct stat *file_stat = &files->stats[i];
+        bool is_dir = files->is_directory[i];
 
-        if (S_ISLNK(file_stat->st_mode)) {
+        if (is_dir) {
+            // Handle directory
+            int lfh_len = 0;
+            struct zip_local_header *lfh = build_directory_local_file_header(
+                archive_name,
+                file_stat->st_uid,
+                file_stat->st_gid,
+                file_stat->st_mtime,
+                &lfh_len);
+
+            if (!lfh) {
+                fprintf(stderr, "Failed to build directory local file header\n");
+                continue;
+            }
+
+            // Add the directory with Unix metadata (mode includes S_IFDIR)
+            if (burst_writer_add_directory(writer, lfh, lfh_len,
+                                           file_stat->st_mode,
+                                           file_stat->st_uid,
+                                           file_stat->st_gid) != 0) {
+                fprintf(stderr, "Failed to add directory: %s\n", input_path);
+                free(lfh);
+                // Continue with other entries
+            } else {
+                num_added++;
+            }
+
+            free(lfh);
+        } else if (S_ISLNK(file_stat->st_mode)) {
             // Handle symlink
             size_t target_len = strlen(symlink_target);
 
@@ -570,12 +693,14 @@ int main(int argc, char **argv) {
     }
 
     if (num_added == 0) {
-        fprintf(stderr, "Error: No files were added to archive\n");
+        fprintf(stderr, "Error: No files or directories were added to archive\n");
         burst_writer_destroy(writer);
         fclose(output);
         file_list_destroy(files);
         return 1;
     }
+
+    // Note: num_added includes directories, so empty directories are valid archives
 
     // Finalize archive
     printf("\nFinalizing archive...\n");

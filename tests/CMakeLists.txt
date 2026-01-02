@@ -127,6 +127,25 @@ add_unit_test(test_crc32)
 add_unit_test(test_zstd_frames)
 add_unit_test(test_alignment)
 
+# Test for writer helper functions (includes burst_writer.c directly for static function access)
+# We include the source file directly but still need the other writer components
+add_executable(test_writer_helpers
+    unit/test_writer_helpers.c
+    ../src/writer/zip_structures.c
+    ../src/writer/compression.c
+    ../src/writer/alignment.c
+)
+target_include_directories(test_writer_helpers PRIVATE
+    ../include
+    ${ZSTD_INCLUDE_DIR}
+)
+target_link_libraries(test_writer_helpers
+    unity
+    ZLIB::ZLIB
+    ${ZSTD_LIBRARY}
+)
+add_test(NAME test_writer_helpers COMMAND test_writer_helpers)
+
 # Downloader unit tests (use burst_downloader_lib instead of burst_writer_lib)
 add_executable(test_central_dir_parser unit/test_central_dir_parser.c)
 target_link_libraries(test_central_dir_parser

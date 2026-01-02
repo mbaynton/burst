@@ -122,6 +122,86 @@ int burst_writer_flush(struct burst_writer *writer) {
 }
 
 /*
+ * Helper functions for burst_writer_add_* to reduce code duplication.
+ */
+
+// Expand file tracking array if needed. Returns 0 on success, -1 on error.
+static int ensure_file_capacity(struct burst_writer *writer) {
+    if (writer->num_files >= writer->files_capacity) {
+        size_t new_capacity = writer->files_capacity * 2;
+        struct file_entry *new_files = realloc(writer->files, new_capacity * sizeof(struct file_entry));
+        if (!new_files) {
+            fprintf(stderr, "Failed to expand file tracking array\n");
+            return -1;
+        }
+        writer->files = new_files;
+        writer->files_capacity = new_capacity;
+    }
+    return 0;
+}
+
+// Initialize new file entry and allocate filename from LFH.
+// Returns entry pointer, or NULL on allocation failure.
+static struct file_entry* allocate_file_entry(struct burst_writer *writer,
+                                               const struct zip_local_header *lfh) {
+    struct file_entry *entry = &writer->files[writer->num_files];
+    memset(entry, 0, sizeof(struct file_entry));
+
+    const char *filename = (const char *)((uint8_t *)lfh + sizeof(struct zip_local_header));
+    entry->filename = strndup(filename, lfh->filename_length);
+    if (!entry->filename) {
+        return NULL;
+    }
+
+    return entry;
+}
+
+// Copy header fields from LFH to entry and set Unix metadata.
+static void populate_entry_metadata(struct file_entry *entry,
+                                    const struct zip_local_header *lfh,
+                                    uint64_t local_header_offset,
+                                    uint32_t unix_mode,
+                                    uint32_t uid,
+                                    uint32_t gid) {
+    entry->local_header_offset = local_header_offset;
+    entry->compression_method = lfh->compression_method;
+    entry->version_needed = lfh->version_needed;
+    entry->general_purpose_flags = lfh->flags;
+    entry->last_mod_time = lfh->last_mod_time;
+    entry->last_mod_date = lfh->last_mod_date;
+    entry->unix_mode = unix_mode;
+    entry->uid = uid;
+    entry->gid = gid;
+}
+
+// Check alignment and write padding LFH if needed.
+// content_size: known content size (0 for files with unknown size, target_len for symlinks)
+// has_data_descriptor: true for files (adds ZIP64 descriptor size to space calculation)
+// Returns 0 on success, -1 on error.
+static int check_alignment_and_pad(struct burst_writer *writer,
+                                   size_t lfh_len,
+                                   size_t content_size,
+                                   bool has_data_descriptor) {
+    uint64_t write_pos = alignment_get_write_position(writer);
+    uint64_t next_boundary = alignment_next_boundary(write_pos);
+    uint64_t space_until_boundary = next_boundary - write_pos;
+
+    // Calculate space needed based on entry type
+    size_t space_needed = lfh_len + content_size + PADDING_LFH_MIN_SIZE;
+    if (has_data_descriptor) {
+        // Use worst-case ZIP64 data descriptor size (24 bytes)
+        space_needed += sizeof(struct zip_data_descriptor_zip64);
+    }
+
+    if (space_until_boundary < space_needed) {
+        // Not enough space - write a padding LFH to advance to boundary
+        return write_padding_lfh(writer, (size_t)space_until_boundary);
+    }
+
+    return 0;
+}
+
+/*
 burst_writer_add_file adds a file to the BURST archive.
 It may write a number of structures to the output in the process:
 - Local File Header (from caller)
@@ -162,65 +242,24 @@ int burst_writer_add_file(struct burst_writer *writer,
         rewind(input_file);
     }
 
-    // Expand file tracking array if needed
-    if (writer->num_files >= writer->files_capacity) {
-        size_t new_capacity = writer->files_capacity * 2;
-        struct file_entry *new_files = realloc(writer->files, new_capacity * sizeof(struct file_entry));
-        if (!new_files) {
-            fprintf(stderr, "Failed to expand file tracking array\n");
-            return -1;
-        }
-        writer->files = new_files;
-        writer->files_capacity = new_capacity;
-    }
-
-    // Initialize file entry
-    struct file_entry *entry = &writer->files[writer->num_files];
-    memset(entry, 0, sizeof(struct file_entry));
-
-    // Extract filename from local file header for central directory entry
-    const char *filename = (const char *)((uint8_t *)lfh + sizeof(struct zip_local_header));
-    entry->filename = strndup(filename, lfh->filename_length);
-    if (!entry->filename) {
+    if (ensure_file_capacity(writer) != 0) {
         return -1;
     }
 
-    // Check if we need to insert a padding LFH before writing this file's LFH
-    // to ensure proper alignment. This ensures we always have room for the current
-    // file's LFH + data descriptor + at least a minimum padding LFH for the next file.
-    {
-        uint64_t write_pos = alignment_get_write_position(writer);
-        uint64_t next_boundary = alignment_next_boundary(write_pos);
-        uint64_t space_until_boundary = next_boundary - write_pos;
-
-        // Space needed: current LFH + data descriptor + minimum padding LFH
-        // Use worst-case ZIP64 data descriptor size (24 bytes) to ensure we have
-        // enough space regardless of the final file size
-        const size_t data_descriptor_size = sizeof(struct zip_data_descriptor_zip64);  // 24 bytes
-        size_t space_needed = (size_t)lfh_len + data_descriptor_size + PADDING_LFH_MIN_SIZE;
-
-        if (space_until_boundary < space_needed) {
-            // Not enough space - write a padding LFH to advance to boundary
-            if (write_padding_lfh(writer, (size_t)space_until_boundary) != 0) {
-                free(entry->filename);
-                return -1;
-            }
-        }
+    struct file_entry *entry = allocate_file_entry(writer, lfh);
+    if (!entry) {
+        return -1;
     }
 
-    entry->local_header_offset = writer->current_offset + writer->buffer_used;
+    // Files have unknown content size at this point (content_size=0) and use data descriptors
+    if (check_alignment_and_pad(writer, (size_t)lfh_len, 0, true) != 0) {
+        free(entry->filename);
+        return -1;
+    }
 
-    // Copy header fields from caller-provided local file header
-    entry->compression_method = lfh->compression_method;
-    entry->version_needed = lfh->version_needed;
-    entry->general_purpose_flags = lfh->flags;
-    entry->last_mod_time = lfh->last_mod_time;
-    entry->last_mod_date = lfh->last_mod_date;
-
-    // Store Unix metadata for central directory
-    entry->unix_mode = unix_mode;
-    entry->uid = uid;
-    entry->gid = gid;
+    populate_entry_metadata(entry, lfh,
+                           writer->current_offset + writer->buffer_used,
+                           unix_mode, uid, gid);
 
     // Write the pre-constructed local file header directly
     if (burst_writer_write(writer, lfh, lfh_len) < 0) {
@@ -367,7 +406,7 @@ int burst_writer_add_file(struct burst_writer *writer,
     // Note: We always require Zstandard for alignment; STORE method not supported
     if (total_compressed >= total_uncompressed) {
         printf("Warning: Compressed size (%lu) >= uncompressed (%lu) for %s\n",
-               (unsigned long)total_compressed, (unsigned long)total_uncompressed, filename);
+               (unsigned long)total_compressed, (unsigned long)total_uncompressed, entry->filename);
     }
 
     // Store sizes and CRC
@@ -429,7 +468,7 @@ write_descriptor:
     writer->total_compressed += entry->compressed_size;
     writer->num_files++;
 
-    printf("Added file: %s (%lu bytes)\n", filename, (unsigned long)entry->uncompressed_size);
+    printf("Added file: %s (%lu bytes)\n", entry->filename, (unsigned long)entry->uncompressed_size);
 
     return 0;
 }
@@ -458,67 +497,29 @@ int burst_writer_add_symlink(struct burst_writer *writer,
         return -1;
     }
 
-    // Expand file tracking array if needed
-    if (writer->num_files >= writer->files_capacity) {
-        size_t new_capacity = writer->files_capacity * 2;
-        struct file_entry *new_files = realloc(writer->files, new_capacity * sizeof(struct file_entry));
-        if (!new_files) {
-            fprintf(stderr, "Failed to expand file tracking array\n");
-            return -1;
-        }
-        writer->files = new_files;
-        writer->files_capacity = new_capacity;
-    }
-
-    // Initialize file entry
-    struct file_entry *entry = &writer->files[writer->num_files];
-    memset(entry, 0, sizeof(struct file_entry));
-
-    // Extract filename from local file header
-    const char *filename = (const char *)((uint8_t *)lfh + sizeof(struct zip_local_header));
-    entry->filename = strndup(filename, lfh->filename_length);
-    if (!entry->filename) {
+    if (ensure_file_capacity(writer) != 0) {
         return -1;
     }
 
-    // Check alignment: lfh + target + minimum padding LFH for next file
-    // (No data descriptor for symlinks - sizes known upfront)
-    {
-        uint64_t write_pos = alignment_get_write_position(writer);
-        uint64_t next_boundary = alignment_next_boundary(write_pos);
-        uint64_t space_until_boundary = next_boundary - write_pos;
-
-        size_t space_needed = (size_t)lfh_len + target_len + PADDING_LFH_MIN_SIZE;
-
-        if (space_until_boundary < space_needed) {
-            // Not enough space - write a padding LFH to advance to boundary
-            if (write_padding_lfh(writer, (size_t)space_until_boundary) != 0) {
-                free(entry->filename);
-                return -1;
-            }
-        }
+    struct file_entry *entry = allocate_file_entry(writer, lfh);
+    if (!entry) {
+        return -1;
     }
 
-    entry->local_header_offset = writer->current_offset + writer->buffer_used;
+    // Symlinks have known content size (target_len), no data descriptor
+    if (check_alignment_and_pad(writer, (size_t)lfh_len, target_len, false) != 0) {
+        free(entry->filename);
+        return -1;
+    }
 
-    // Copy header fields from caller-provided local file header
-    entry->compression_method = lfh->compression_method;
-    entry->version_needed = lfh->version_needed;
-    entry->general_purpose_flags = lfh->flags;
-    entry->last_mod_time = lfh->last_mod_time;
-    entry->last_mod_date = lfh->last_mod_date;
+    populate_entry_metadata(entry, lfh,
+                           writer->current_offset + writer->buffer_used,
+                           unix_mode, uid, gid);
 
     // Symlinks have content, so CRC and sizes are in LFH (pre-computed by caller)
     entry->crc32 = lfh->crc32;
     entry->compressed_size = target_len;  // STORE method: compressed = uncompressed
     entry->uncompressed_size = target_len;
-
-    // Store Unix metadata for central directory
-    entry->unix_mode = unix_mode;
-    entry->uid = uid;
-    entry->gid = gid;
-
-    // Symlinks don't use data descriptors
     entry->used_zip64_descriptor = false;
 
     // Write the pre-constructed local file header
@@ -533,14 +534,90 @@ int burst_writer_add_symlink(struct burst_writer *writer,
         return -1;
     }
 
-    // No data descriptor for symlinks - sizes are in the LFH
-
     // Update statistics
     writer->total_uncompressed += entry->uncompressed_size;
     writer->total_compressed += entry->compressed_size;
     writer->num_files++;
 
     printf("Added symlink: %s -> %.*s\n", entry->filename, (int)target_len, target);
+
+    return 0;
+}
+
+/*
+burst_writer_add_directory adds a directory entry to the BURST archive.
+Directories are header-only entries (like empty files and symlinks):
+- Use STORE method (no compression)
+- Have zero content (no compressed data, no data descriptor)
+- Store all metadata in the local file header
+- Require trailing slash in filename
+- May need padding LFH for alignment
+
+Unlike symlinks which may have target data, directories have NO data bytes at all.
+*/
+int burst_writer_add_directory(struct burst_writer *writer,
+                                struct zip_local_header *lfh,
+                                int lfh_len,
+                                uint32_t unix_mode,
+                                uint32_t uid,
+                                uint32_t gid) {
+    if (!writer || !lfh || lfh_len <= 0) {
+        return -1;
+    }
+
+    // Verify this is a directory entry (filename ends with '/')
+    const char *filename = (const char *)((uint8_t *)lfh + sizeof(struct zip_local_header));
+    if (lfh->filename_length == 0 || filename[lfh->filename_length - 1] != '/') {
+        fprintf(stderr, "Error: Directory filename must end with '/'\n");
+        return -1;
+    }
+
+    // Verify directory has correct method and sizes
+    if (lfh->compression_method != ZIP_METHOD_STORE ||
+        lfh->compressed_size != 0 ||
+        lfh->uncompressed_size != 0) {
+        fprintf(stderr, "Error: Directory must use STORE method with zero sizes\n");
+        return -1;
+    }
+
+    if (ensure_file_capacity(writer) != 0) {
+        return -1;
+    }
+
+    struct file_entry *entry = allocate_file_entry(writer, lfh);
+    if (!entry) {
+        return -1;
+    }
+
+    // Directories have no data, so content_size=0 and no data descriptor
+    if (check_alignment_and_pad(writer, (size_t)lfh_len, 0, false) != 0) {
+        free(entry->filename);
+        return -1;
+    }
+
+    populate_entry_metadata(entry, lfh,
+                           writer->current_offset + writer->buffer_used,
+                           unix_mode, uid, gid);
+
+    // Directories have zero sizes and CRC
+    entry->crc32 = 0;
+    entry->compressed_size = 0;
+    entry->uncompressed_size = 0;
+    entry->used_zip64_descriptor = false;
+
+    // Write the pre-constructed local file header
+    if (burst_writer_write(writer, lfh, lfh_len) < 0) {
+        free(entry->filename);
+        return -1;
+    }
+
+    // No data content for directories
+    // No data descriptor for directories
+
+    // Statistics: directories don't contribute to compressed/uncompressed totals
+    writer->num_files++;
+
+    printf("Added directory: %s\n", entry->filename);
 
     return 0;
 }
