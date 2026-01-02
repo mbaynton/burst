@@ -352,6 +352,13 @@ set_tests_properties(test_e2e_many_files PROPERTIES
     LABELS "e2e;integration;s3;btrfs;slow"
     TIMEOUT 600)
 
+add_test(NAME test_e2e_zip64
+         COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/e2e/test_e2e_zip64.sh
+         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(test_e2e_zip64 PROPERTIES
+    LABELS "e2e;integration;s3;btrfs;slow"
+    TIMEOUT 1200)
+
 add_test(NAME test_e2e_unix_metadata
          COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/e2e/test_e2e_unix_metadata.sh
          WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
