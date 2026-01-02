@@ -358,3 +358,11 @@ add_test(NAME test_e2e_unix_metadata
 set_tests_properties(test_e2e_unix_metadata PROPERTIES
     LABELS "e2e;integration;s3;btrfs;sudo"
     TIMEOUT 300)
+
+add_test(NAME test_e2e_padding_lfh
+         COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/e2e/test_e2e_padding_lfh.sh
+         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(test_e2e_padding_lfh PROPERTIES
+    LABELS "e2e;integration;s3;btrfs"
+    TIMEOUT 300
+    ENVIRONMENT "BURST_WRITER_TEST_MODE=${CMAKE_BINARY_DIR}/burst-writer-test-mode;BURST_DOWNLOADER=${CMAKE_BINARY_DIR}/burst-downloader")

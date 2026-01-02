@@ -52,6 +52,32 @@ target_link_libraries(burst-writer PRIVATE
     ${ZSTD_LIBRARY}
 )
 
+# Test-mode burst-writer with forced padding LFH
+add_executable(burst-writer-test-mode
+    src/writer/main.c
+    src/writer/burst_writer.c
+    src/writer/zip_structures.c
+    src/writer/compression.c
+    src/writer/alignment.c
+)
+
+target_include_directories(burst-writer-test-mode PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${ZSTD_INCLUDE_DIR}
+)
+
+target_link_libraries(burst-writer-test-mode PRIVATE
+    ZLIB::ZLIB
+    ${ZSTD_LIBRARY}
+)
+
+# Define test mode flag
+target_compile_definitions(burst-writer-test-mode PRIVATE
+    BURST_TEST_FORCE_PADDING_LFH
+)
+
+# Don't install test mode binary (for testing only)
+
 # Installation
 install(TARGETS burst-writer DESTINATION bin)
 

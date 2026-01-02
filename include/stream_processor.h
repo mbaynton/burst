@@ -43,8 +43,9 @@ struct file_metadata;
  * ```
  */
 
-// Error codes
+// Return codes
 #define STREAM_PROC_SUCCESS 0
+#define STREAM_PROC_SKIPPED_PADDING 1  // Successfully skipped padding LFH (don't increment entry index)
 #define STREAM_PROC_ERR_INVALID_ARGS -1
 #define STREAM_PROC_ERR_MEMORY -2
 #define STREAM_PROC_ERR_INVALID_FRAME -3
