@@ -263,6 +263,13 @@ int part_processor_process_data(
             if (rc == STREAM_PROC_NEED_MORE_DATA) {
                 goto buffer_remaining;
             }
+            if (rc == STREAM_PROC_SKIPPED_PADDING) {
+                // Padding LFH was skipped - consume bytes but don't increment entry index
+                // and stay in STATE_EXPECT_LOCAL_HEADER to find the next real file
+                offset += bytes_consumed;
+                state->bytes_processed += bytes_consumed;
+                break;
+            }
             if (rc != STREAM_PROC_SUCCESS) {
                 return rc;
             }
@@ -550,6 +557,17 @@ static int handle_local_header(struct part_processor_state *state,
 
     if (available_len < header_size) {
         return STREAM_PROC_NEED_MORE_DATA;
+    }
+
+    // Check if this is a padding LFH (not in central directory)
+    const char *lfh_filename = (const char *)(header_data + sizeof(struct zip_local_header));
+    if (lfh->filename_length == PADDING_LFH_FILENAME_LEN &&
+        memcmp(lfh_filename, PADDING_LFH_FILENAME, PADDING_LFH_FILENAME_LEN) == 0) {
+        // This is a padding LFH - skip it without advancing next_entry_idx
+        *bytes_consumed = header_size;
+        // State remains STATE_EXPECT_LOCAL_HEADER for next frame
+        // Return special code so caller knows not to increment next_entry_idx
+        return STREAM_PROC_SKIPPED_PADDING;
     }
 
     // Get file metadata from central directory

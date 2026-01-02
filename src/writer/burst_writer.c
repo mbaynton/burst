@@ -9,6 +9,28 @@
 #define INITIAL_FILES_CAPACITY 16
 #define WRITE_BUFFER_SIZE (64 * 1024)  // 64 KiB write buffer
 
+// Test mode: Force padding LFH at specific offsets for testing
+#ifdef BURST_TEST_FORCE_PADDING_LFH
+static uint64_t padding_test_offsets[] = {
+    8388608 - 1024,   // 1 KiB before 8 MiB boundary
+    16777216 - 2048,  // 2 KiB before 16 MiB boundary
+};
+static size_t num_padding_offsets = sizeof(padding_test_offsets) / sizeof(uint64_t);
+static size_t next_padding_idx = 0;
+
+static bool should_force_padding(uint64_t current_offset) {
+    if (next_padding_idx >= num_padding_offsets) {
+        return false;
+    }
+    // Check if we've reached or passed the next padding offset
+    if (current_offset >= padding_test_offsets[next_padding_idx]) {
+        next_padding_idx++;
+        return true;
+    }
+    return false;
+}
+#endif
+
 struct burst_writer* burst_writer_create(FILE *output, int compression_level) {
     if (!output) {
         return NULL;
@@ -183,6 +205,17 @@ static int check_alignment_and_pad(struct burst_writer *writer,
                                    size_t content_size,
                                    bool has_data_descriptor) {
     uint64_t write_pos = alignment_get_write_position(writer);
+
+#ifdef BURST_TEST_FORCE_PADDING_LFH
+    // Test mode: Force padding LFH at specific offset
+    if (should_force_padding(write_pos)) {
+        fprintf(stderr, "TEST MODE: Forcing padding LFH at offset %llu\n",
+                (unsigned long long)write_pos);
+        // Insert minimum-size padding to trigger the test scenario
+        return write_padding_lfh(writer, PADDING_LFH_MIN_SIZE);
+    }
+#endif
+
     uint64_t next_boundary = alignment_next_boundary(write_pos);
     uint64_t space_until_boundary = next_boundary - write_pos;
 
