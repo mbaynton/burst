@@ -18,7 +18,7 @@ help:
 	@echo "Parallel execution: Default $(CTEST_PARALLEL_LEVEL) jobs (set via CTEST_PARALLEL_LEVEL)"
 	@echo "Example: CTEST_PARALLEL_LEVEL=8 make test-integration"
 
-test: test-unit test-integration test-slow
+test: test-unit test-integration
 
 test-unit:
 	@if [ ! -d build ]; then \
