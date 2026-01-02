@@ -159,13 +159,41 @@ The [tests/CMakeLists.txt](tests/CMakeLists.txt) provides two helper functions:
 ### Running Tests
 
 ```bash
+# Via Makefile (recommended)
+make test                         # All tests (~20-25min)
+make test-unit                    # Unit tests (11 tests, ~5s)
+make test-integration             # Fast integration (14 tests, ~3-5min with 4 parallel jobs)
+make test-slow                    # Slow E2E tests (5 tests, ~5-8min with 4 parallel jobs)
+
+# Control parallelism
+CTEST_PARALLEL_LEVEL=8 make test-integration  # Use 8 parallel jobs
+CTEST_PARALLEL_LEVEL=1 make test-integration  # Disable parallelism
+
 # Via CTest (from build directory)
-ctest                    # Run all tests
-ctest -V                 # Verbose output
-ctest -R test_alignment  # Run specific test
+ctest                             # Run all tests
+ctest -V                          # Verbose output
+ctest -R test_alignment           # Run specific test
+ctest -L slow --parallel 4        # Slow tests with 4 jobs
 
 # Direct execution
 cd build/tests
-./test_alignment         # Run unit test directly
+./test_alignment                  # Run unit test directly
 bash ../../tests/integration/test_writer_basic.sh  # Run integration test
 ```
+
+### Test Labels
+- `integration` - Non-unit tests (14 tests)
+- `s3` - Requires S3 access (7 tests)
+- `e2e` - End-to-end tests (5 tests)
+- `btrfs` - Requires BTRFS filesystem (5 tests)
+- `slow` - Tests with 300s+ timeout (5 tests) - automatically parallelized in CI
+- `sudo` - Requires sudo privileges (1 test)
+
+### CI/CD Workflow
+GitHub Actions parallelizes tests automatically:
+1. Build + Fast Tests: unit + integration with 4 parallel jobs (~10-15min)
+2. Slow Test Matrix: Dynamically constructed from `ctest -L slow` (~5-10min per test)
+
+The slow test matrix is built automatically from CMakeLists.txt labels - no manual maintenance required.
+
+Total: ~15-20 minutes (vs ~25-30 sequential)

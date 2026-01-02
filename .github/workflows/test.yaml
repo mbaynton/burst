@@ -7,8 +7,10 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  build-and-fast-tests:
     runs-on: ubuntu-latest
+    outputs:
+      slow-tests: ${{ steps.list-slow-tests.outputs.matrix }}
 
     steps:
     - uses: actions/checkout@v2
@@ -16,7 +18,7 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y btrfs-compsize libzstd-dev zlib1g-dev cmake ruby unzip
+        sudo apt-get install -y btrfs-compsize libzstd-dev zlib1g-dev cmake ruby unzip jq
         sudo snap install aws-cli --classic
 
     - name: Install 7-Zip with Zstandard support
@@ -36,10 +38,18 @@ jobs:
         cmake -DBUILD_DOWNLOADER=ON ..
         make
 
-    - name: Run unit tests
+    - name: List slow tests for matrix
+      id: list-slow-tests
       run: |
         cd build
-        ctest -LE integration --output-on-failure
+        # Extract test names from ctest JSON output
+        TESTS=$(ctest -L slow --show-only=json-v1 | \
+          jq -c '[.tests[].name]')
+        echo "matrix=$TESTS" >> $GITHUB_OUTPUT
+        echo "Slow tests to run in parallel: $TESTS"
+
+    - name: Run unit tests
+      run: make test-unit
 
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
@@ -47,20 +57,58 @@ jobs:
         aws-region: us-east-1
         role-to-assume: arn:aws:iam::339404546440:role/BurstGithubTests
 
-    - name: Run integration tests
+    - name: Run integration tests (excluding slow E2E)
       env:
         BURST_TEST_BUCKET: burst-integration-tests
         BURST_TEST_KEY_PREFIX: "ci-test-artifacts/"
         AWS_REGION: us-east-1
-      run: |
-        cd build
-        ctest -L integration -LE e2e --output-on-failure
+      run: make test-integration
 
-    - name: Run e2e tests
+    - name: Upload binaries for E2E tests
+      uses: actions/upload-artifact@v4
+      with:
+        name: burst-binaries
+        path: |
+          build/burst-writer
+          build/burst-downloader
+        retention-days: 1
+
+  slow-tests:
+    needs: build-and-fast-tests
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        test: ${{ fromJson(needs.build-and-fast-tests.outputs.slow-tests) }}
+
+    steps:
+    - uses: actions/checkout@v2
+
+    - name: Install 7-Zip with Zstandard support
+      run: |
+        wget https://www.7-zip.org/a/7z2408-linux-x64.tar.xz
+        tar -xf 7z2408-linux-x64.tar.xz
+        sudo cp 7zz /usr/local/bin/
+        sudo chmod +x /usr/local/bin/7zz
+
+    - name: Download binaries
+      uses: actions/download-artifact@v4
+      with:
+        name: burst-binaries
+        path: build/
+
+    - name: Make binaries executable
+      run: chmod +x build/burst-*
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-region: us-east-1
+        role-to-assume: arn:aws:iam::339404546440:role/BurstGithubTests
+
+    - name: Run slow test - ${{ matrix.test }}
       env:
         BURST_TEST_BUCKET: burst-integration-tests
         BURST_TEST_KEY_PREFIX: "ci-e2e-artifacts/"
         AWS_REGION: us-east-1
-      run: |
-        cd build
-        ctest -L e2e --output-on-failure
+      run: bash tests/integration/e2e/${{ matrix.test }}.sh

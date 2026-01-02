@@ -7,7 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 BUILD_DIR="$PROJECT_ROOT/build"
 FIXTURES_DIR="$PROJECT_ROOT/tests/fixtures"
-TEST_TMP="$PROJECT_ROOT/tests/tmp"
+TEST_TMP="$PROJECT_ROOT/tests/tmp/writer_basic"
 
 # Use native 7zz with Zstandard support
 function run_7z() {

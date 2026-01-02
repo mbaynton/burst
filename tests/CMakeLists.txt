@@ -309,33 +309,33 @@ add_test(NAME test_e2e_small
          COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/e2e/test_e2e_small.sh
          WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 set_tests_properties(test_e2e_small PROPERTIES
-    LABELS "e2e;integration;s3;btrfs"
+    LABELS "e2e;integration;s3;btrfs;slow"
     TIMEOUT 300)
 
 add_test(NAME test_e2e_medium
          COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/e2e/test_e2e_medium.sh
          WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 set_tests_properties(test_e2e_medium PROPERTIES
-    LABELS "e2e;integration;s3;btrfs"
+    LABELS "e2e;integration;s3;btrfs;slow"
     TIMEOUT 300)
 
 add_test(NAME test_e2e_continuing
          COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/e2e/test_e2e_continuing.sh
          WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 set_tests_properties(test_e2e_continuing PROPERTIES
-    LABELS "e2e;integration;s3;btrfs"
+    LABELS "e2e;integration;s3;btrfs;slow"
     TIMEOUT 300)
 
 add_test(NAME test_e2e_many_files
          COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/e2e/test_e2e_many_files.sh
          WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 set_tests_properties(test_e2e_many_files PROPERTIES
-    LABELS "e2e;integration;s3;btrfs"
+    LABELS "e2e;integration;s3;btrfs;slow"
     TIMEOUT 600)
 
 add_test(NAME test_e2e_unix_metadata
          COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/e2e/test_e2e_unix_metadata.sh
          WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 set_tests_properties(test_e2e_unix_metadata PROPERTIES
-    LABELS "e2e;integration;s3;btrfs;sudo"
+    LABELS "e2e;integration;s3;btrfs;sudo;slow"
     TIMEOUT 300)
