@@ -7,7 +7,7 @@ permissions:
   contents: read
 
 jobs:
-  build-and-fast-tests:
+  build-and-unit-tests:
     runs-on: ubuntu-latest
     outputs:
       slow-tests: ${{ steps.list-slow-tests.outputs.matrix }}
@@ -18,8 +18,7 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y btrfs-compsize libzstd-dev zlib1g-dev cmake ruby unzip jq
-        sudo snap install aws-cli --classic
+        sudo apt-get install -y libzstd-dev zlib1g-dev cmake ruby jq
 
     - name: Install 7-Zip with Zstandard support
       run: |
@@ -51,6 +50,50 @@ jobs:
     - name: Run unit tests
       run: make test-unit
 
+    - name: Upload build for integration and E2E tests
+      uses: actions/upload-artifact@v4
+      with:
+        name: burst-binaries
+        path: |
+          build/burst-writer
+          build/burst-downloader
+          build/Makefile
+          build/CTestTestfile.cmake
+          build/tests/
+        retention-days: 1
+
+  integration-tests:
+    runs-on: ubuntu-latest
+    needs: build-and-unit-tests
+
+    steps:
+    - uses: actions/checkout@v2
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y btrfs-compsize unzip
+        sudo snap install aws-cli --classic
+
+    - name: Install 7-Zip with Zstandard support
+      run: |
+        # Download official 7-Zip from 7-zip.org (includes Zstandard codec)
+        # Note: Ubuntu/Debian's p7zip-full package strips Zstandard for DFSG compliance
+        wget https://www.7-zip.org/a/7z2408-linux-x64.tar.xz
+        tar -xf 7z2408-linux-x64.tar.xz
+        sudo cp 7zz /usr/local/bin/
+        sudo chmod +x /usr/local/bin/7zz
+        7zz --help | head -2
+
+    - name: Download binaries
+      uses: actions/download-artifact@v4
+      with:
+        name: burst-binaries
+        path: build/
+
+    - name: Make binaries executable
+      run: chmod +x build/burst-* build/tests/test_*
+    
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
@@ -64,22 +107,13 @@ jobs:
         AWS_REGION: us-east-1
       run: make test-integration
 
-    - name: Upload binaries for E2E tests
-      uses: actions/upload-artifact@v4
-      with:
-        name: burst-binaries
-        path: |
-          build/burst-writer
-          build/burst-downloader
-        retention-days: 1
-
   slow-tests:
-    needs: build-and-fast-tests
+    needs: build-and-unit-tests
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        test: ${{ fromJson(needs.build-and-fast-tests.outputs.slow-tests) }}
+        test: ${{ fromJson(needs.build-and-unit-tests.outputs.slow-tests) }}
 
     steps:
     - uses: actions/checkout@v2
@@ -98,7 +132,7 @@ jobs:
         path: build/
 
     - name: Make binaries executable
-      run: chmod +x build/burst-*
+      run: chmod +x build/burst-* build/tests/test_*
 
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
@@ -111,4 +145,4 @@ jobs:
         BURST_TEST_BUCKET: burst-integration-tests
         BURST_TEST_KEY_PREFIX: "ci-e2e-artifacts/"
         AWS_REGION: us-east-1
-      run: bash tests/integration/e2e/${{ matrix.test }}.sh
+      run: cd build && ctest -R "^${{ matrix.test }}$"
