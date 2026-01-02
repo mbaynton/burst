@@ -27,7 +27,7 @@ source "$SCRIPT_DIR/e2e_common.sh"
 source "$SCRIPT_DIR/setup_btrfs.sh"
 
 # Test configuration
-TEST_NAME="E2E ZIP64 Support (70k+ files, 6 GiB file, 5.8 GiB archive)"
+TEST_NAME="E2E ZIP64 Support (66k+ files, 6 GiB file, 5 GiB archive)"
 TEST_ID="zip64-$(date +%s)"
 TEST_WORK_DIR="$E2E_TMP_DIR/test_zip64_$TEST_ID"
 S3_KEY="${BURST_TEST_KEY_PREFIX}${TEST_ID}.zip"
@@ -85,9 +85,9 @@ if ! check_prerequisites; then
 fi
 
 echo "Test configuration:"
-echo "  File count: 70,465 files (96 copies × 734 files + 1 large file)"
+echo "  File count: 66,151 files (270 copies × 245 files + 1 large file)"
 echo "  Large file: 6 GiB uncompressed"
-echo "  Total size: ~5.8 GiB compressed archive"
+echo "  Total size: ~5 GiB compressed archive"
 echo "  Tests: ZIP64 file count, file size, and archive size"
 echo "  S3 Bucket:   $BURST_TEST_BUCKET"
 echo "  S3 Key:      $S3_KEY"
@@ -186,9 +186,9 @@ echo -e "${GREEN}✓${NC} Created large file: $((final_size / 1073741824)) GiB (
 # Step 3: Create reflinked copies
 echo ""
 echo "Step 3: Creating reflinked copies of fixture..."
-echo "Target: 96 copies × $fixture_file_count files = ~70,000 files"
+echo "Target: 270 copies × $fixture_file_count files = ~66,000 files"
 
-num_copies=96
+num_copies=270
 for i in $(seq 1 $num_copies); do
     cp -r --reflink=always "$SEED_DIR" "$INPUT_DIR/copy_$(printf "%03d" $i)"
 
@@ -199,7 +199,7 @@ for i in $(seq 1 $num_copies); do
 done
 
 total_files=$(find "$INPUT_DIR" -type f | wc -l)
-echo -e "${GREEN}✓${NC} Created $total_files total files (96 copies + 1 large file)"
+echo -e "${GREEN}✓${NC} Created $total_files total files (270 copies + 1 large file)"
 
 # Verify we exceeded 65,534 threshold
 if [ $total_files -le 65534 ]; then
