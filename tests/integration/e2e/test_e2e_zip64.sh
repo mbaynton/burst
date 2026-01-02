@@ -57,6 +57,16 @@ cleanup() {
         echo -e "${GREEN}✓${NC} Removed extracted files"
     fi
 
+    if [ -d "$BTRFS_MOUNT_DIR/seed_$TEST_ID" ]; then
+        rm -rf "$BTRFS_MOUNT_DIR/seed_$TEST_ID"
+        echo -e "${GREEN}✓${NC} Removed seed directory"
+    fi
+
+    if [ -d "$BTRFS_MOUNT_DIR/input_$TEST_ID" ]; then
+        rm -rf "$BTRFS_MOUNT_DIR/input_$TEST_ID"
+        echo -e "${GREEN}✓${NC} Removed input directory"
+    fi
+
     if [ $TEST_EXIT_CODE -eq 0 ] && [ -n "$S3_UPLOADED" ]; then
         delete_from_s3 "$S3_KEY"
         echo -e "${GREEN}✓${NC} Removed S3 object"
@@ -100,14 +110,15 @@ if ! aws s3api head-object --bucket "$BURST_TEST_BUCKET" --key "$FIXTURE_KEY" --
 fi
 echo -e "${GREEN}✓${NC} Found fixture in S3"
 
-# Download and extract fixture
-mkdir -p seed_extract
-echo "Downloading and extracting fixture..."
+# Download and extract fixture TO BTRFS mount (required for reflinks)
+SEED_DIR="$BTRFS_MOUNT_DIR/seed_$TEST_ID"
+mkdir -p "$SEED_DIR"
+echo "Downloading and extracting fixture to BTRFS mount..."
 "$BURST_DOWNLOADER" \
     --bucket "$BURST_TEST_BUCKET" \
     --key "$FIXTURE_KEY" \
     --region "$AWS_REGION" \
-    --output-dir seed_extract
+    --output-dir "$SEED_DIR"
 
 if [ $? -ne 0 ]; then
     echo -e "${RED}✗ Failed to download fixture${NC}"
@@ -115,15 +126,16 @@ if [ $? -ne 0 ]; then
 fi
 
 # Count files in fixture
-fixture_file_count=$(find seed_extract -type f | wc -l)
+fixture_file_count=$(find "$SEED_DIR" -type f | wc -l)
 echo -e "${GREEN}✓${NC} Downloaded and extracted fixture ($fixture_file_count files)"
 
 # Step 2: Create large file (6 GiB)
 echo ""
 echo "Step 2: Creating large file (target: 6 GiB)..."
-mkdir -p input
+INPUT_DIR="$BTRFS_MOUNT_DIR/input_$TEST_ID"
+mkdir -p "$INPUT_DIR"
 target_size=$((6 * 1024 * 1024 * 1024))  # 6 GiB
-large_file="input/large_file.txt"
+large_file="$INPUT_DIR/large_file.txt"
 touch "$large_file"
 
 iteration=0
@@ -145,7 +157,7 @@ while true; do
     fi
 
     # Concatenate all fixture files
-    find seed_extract -type f -name "*.txt" -exec cat {} + >> "$large_file"
+    find "$SEED_DIR" -type f -name "*.txt" -exec cat {} + >> "$large_file"
     iteration=$((iteration + 1))
 done
 
@@ -159,7 +171,7 @@ echo "Target: 96 copies × $fixture_file_count files = ~70,000 files"
 
 num_copies=96
 for i in $(seq 1 $num_copies); do
-    cp -r --reflink=always seed_extract "input/copy_$(printf "%03d" $i)"
+    cp -r --reflink=always "$SEED_DIR" "$INPUT_DIR/copy_$(printf "%03d" $i)"
 
     # Show progress every 10 copies
     if [ $((i % 10)) -eq 0 ]; then
@@ -167,7 +179,7 @@ for i in $(seq 1 $num_copies); do
     fi
 done
 
-total_files=$(find input -type f | wc -l)
+total_files=$(find "$INPUT_DIR" -type f | wc -l)
 echo -e "${GREEN}✓${NC} Created $total_files total files (96 copies + 1 large file)"
 
 # Verify we exceeded 65,534 threshold
@@ -180,14 +192,14 @@ echo -e "${GREEN}✓${NC} File count exceeds ZIP64 threshold (65,534 < $total_fi
 # Step 4: Generate checksums
 echo ""
 echo "Step 4: Generating checksums for all files (this may take 1-2 minutes)..."
-store_checksums "input" "checksums_original.txt"
+store_checksums "$INPUT_DIR" "checksums_original.txt"
 checksum_count=$(wc -l < "checksums_original.txt")
 echo -e "${GREEN}✓${NC} Generated checksums for $checksum_count files"
 
 # Step 5: Create archive
 echo ""
 echo "Step 5: Creating BURST archive (this may take 3-5 minutes)..."
-"$BURST_WRITER" -l 3 -o test.zip input/
+"$BURST_WRITER" -l 3 -o test.zip "$INPUT_DIR"/
 
 if [ $? -ne 0 ]; then
     echo -e "${RED}✗ Archive creation failed${NC}"
