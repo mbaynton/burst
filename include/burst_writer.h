@@ -30,6 +30,8 @@ struct file_entry {
     uint32_t unix_mode;  // Full mode including file type (S_IFREG, S_IFLNK, etc.)
     uint32_t uid;
     uint32_t gid;
+    // ZIP64 tracking
+    bool used_zip64_descriptor;  // True if data descriptor used 64-bit sizes
 };
 
 // BURST writer context

@@ -36,6 +36,7 @@
 
 // ZIP extra field IDs
 #define ZIP_EXTRA_UNIX_7875_ID 0x7875  // Info-ZIP Unix extra field (uid/gid)
+#define ZIP_EXTRA_ZIP64_ID 0x0001      // ZIP64 extended information extra field
 
 // ZIP local file header (fixed portion)
 struct zip_local_header {
@@ -97,19 +98,59 @@ struct zip_end_central_dir {
     // Followed by: comment
 } __attribute__((packed));
 
+// ZIP64 data descriptor (follows compressed data when bit 3 is set and sizes > 4GB)
+struct zip_data_descriptor_zip64 {
+    uint32_t signature;              // 0x08074b50
+    uint32_t crc32;                  // CRC-32
+    uint64_t compressed_size;        // 64-bit compressed size
+    uint64_t uncompressed_size;      // 64-bit uncompressed size
+} __attribute__((packed));
+
+// ZIP64 End of Central Directory Record (56 bytes)
+struct zip64_end_central_dir {
+    uint32_t signature;              // 0x06064b50
+    uint64_t eocd64_size;            // Size of EOCD64 minus 12 (44 for version 1)
+    uint16_t version_made_by;        // Version made by
+    uint16_t version_needed;         // Version needed to extract
+    uint32_t disk_number;            // Number of this disk
+    uint32_t disk_with_cd;           // Disk where central directory starts
+    uint64_t num_entries_this_disk;  // Number of entries on this disk
+    uint64_t num_entries_total;      // Total number of entries
+    uint64_t central_dir_size;       // Size of central directory
+    uint64_t central_dir_offset;     // Offset of central directory
+    // No extensible data sector in BURST implementation
+} __attribute__((packed));
+
+// ZIP64 End of Central Directory Locator (20 bytes)
+struct zip64_end_central_dir_locator {
+    uint32_t signature;              // 0x07064b50
+    uint32_t disk_with_eocd64;       // Disk where EOCD64 is located
+    uint64_t eocd64_offset;          // Offset of EOCD64
+    uint32_t total_disks;            // Total number of disks
+} __attribute__((packed));
+
 // Function declarations
 int write_local_header(struct burst_writer *writer, const char *filename,
                       uint16_t compression_method, uint16_t flags,
                       uint16_t last_mod_time, uint16_t last_mod_date);
 int write_data_descriptor(struct burst_writer *writer, uint32_t crc32,
-                          uint64_t compressed_size, uint64_t uncompressed_size);
+                          uint64_t compressed_size, uint64_t uncompressed_size,
+                          bool use_zip64);
 int write_central_directory(struct burst_writer *writer);
-int write_end_central_directory(struct burst_writer *writer, uint64_t central_dir_start);
+int write_zip64_end_central_directory(struct burst_writer *writer,
+                                      uint64_t central_dir_start,
+                                      uint64_t central_dir_size);
+int write_zip64_end_central_directory_locator(struct burst_writer *writer,
+                                              uint64_t eocd64_offset);
+int write_end_central_directory(struct burst_writer *writer,
+                                uint64_t central_dir_start,
+                                uint64_t central_dir_size);
 
 // Utility functions
 void dos_datetime_from_time_t(time_t t, uint16_t *time_out, uint16_t *date_out);
 size_t get_local_header_size(const char *filename);
 size_t get_central_header_size(const char *filename);
+size_t get_data_descriptor_size(uint64_t compressed_size, uint64_t uncompressed_size);
 
 // Write an unlisted padding LFH (not added to central directory)
 // Used to pad to boundaries for header-only files (empty files, symlinks)
@@ -120,5 +161,13 @@ int write_padding_lfh(struct burst_writer *writer, size_t target_size);
 // The buffer must be at least 15 bytes (2+2+1+1+4+1+4)
 // Format: Header ID (2) + TSize (2) + Version (1) + UIDSize (1) + UID (4) + GIDSize (1) + GID (4)
 size_t build_unix_extra_field(uint8_t *buffer, size_t buffer_size, uint32_t uid, uint32_t gid);
+
+// Build ZIP64 extended information extra field (0x0001) for central directory
+// Returns the size of the extra field written, or 0 if ZIP64 not needed or error
+// Fields are included only if they overflow 32-bit, in order: uncompressed, compressed, offset
+size_t build_zip64_extra_field(uint8_t *buffer, size_t buffer_size,
+                               uint64_t compressed_size,
+                               uint64_t uncompressed_size,
+                               uint64_t local_header_offset);
 
 #endif // ZIP_STRUCTURES_H

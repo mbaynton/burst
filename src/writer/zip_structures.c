@@ -33,6 +33,14 @@ size_t get_central_header_size(const char *filename) {
     return sizeof(struct zip_central_header) + strlen(filename);
 }
 
+size_t get_data_descriptor_size(uint64_t compressed_size, uint64_t uncompressed_size) {
+    // Use ZIP64 descriptor if either size exceeds 32-bit limit
+    if (compressed_size > 0xFFFFFFFF || uncompressed_size > 0xFFFFFFFF) {
+        return sizeof(struct zip_data_descriptor_zip64);  // 24 bytes
+    }
+    return sizeof(struct zip_data_descriptor);  // 16 bytes
+}
+
 int write_local_header(struct burst_writer *writer, const char *filename,
                       uint16_t compression_method, uint16_t flags,
                       uint16_t last_mod_time, uint16_t last_mod_date) {
@@ -70,17 +78,25 @@ int write_local_header(struct burst_writer *writer, const char *filename,
 }
 
 int write_data_descriptor(struct burst_writer *writer, uint32_t crc32,
-                         uint64_t compressed_size, uint64_t uncompressed_size) {
-    struct zip_data_descriptor desc;
-
-    desc.signature = ZIP_DATA_DESCRIPTOR_SIG;
-    desc.crc32 = crc32;
-
-    // Phase 1: Use 32-bit sizes (ZIP64 will be added in Phase 4)
-    desc.compressed_size = (uint32_t)compressed_size;
-    desc.uncompressed_size = (uint32_t)uncompressed_size;
-
-    return burst_writer_write(writer, &desc, sizeof(desc));
+                         uint64_t compressed_size, uint64_t uncompressed_size,
+                         bool use_zip64) {
+    if (use_zip64) {
+        // Write ZIP64 data descriptor (24 bytes)
+        struct zip_data_descriptor_zip64 desc;
+        desc.signature = ZIP_DATA_DESCRIPTOR_SIG;
+        desc.crc32 = crc32;
+        desc.compressed_size = compressed_size;
+        desc.uncompressed_size = uncompressed_size;
+        return burst_writer_write(writer, &desc, sizeof(desc));
+    } else {
+        // Write standard 32-bit data descriptor (16 bytes)
+        struct zip_data_descriptor desc;
+        desc.signature = ZIP_DATA_DESCRIPTOR_SIG;
+        desc.crc32 = crc32;
+        desc.compressed_size = (uint32_t)compressed_size;
+        desc.uncompressed_size = (uint32_t)uncompressed_size;
+        return burst_writer_write(writer, &desc, sizeof(desc));
+    }
 }
 
 int write_central_directory(struct burst_writer *writer) {
@@ -89,10 +105,36 @@ int write_central_directory(struct burst_writer *writer) {
         struct zip_central_header header;
         memset(&header, 0, sizeof(header));
 
-        // Build Unix extra field for central directory
-        uint8_t extra_field[16];
-        size_t extra_field_len = build_unix_extra_field(extra_field, sizeof(extra_field),
-                                                         entry->uid, entry->gid);
+        // Build extra fields for central directory
+        // Buffer holds Unix extra field (15 bytes) + ZIP64 extra field (up to 28 bytes)
+        uint8_t extra_field[64];
+        size_t extra_field_len = 0;
+
+        // Add Unix extra field
+        extra_field_len = build_unix_extra_field(extra_field, sizeof(extra_field),
+                                                 entry->uid, entry->gid);
+
+        // Determine if ZIP64 extra field is needed for this entry
+        bool need_zip64 = (entry->compressed_size > 0xFFFFFFFF) ||
+                          (entry->uncompressed_size > 0xFFFFFFFF) ||
+                          (entry->local_header_offset > 0xFFFFFFFF);
+
+        // Add ZIP64 extra field if needed
+        size_t zip64_len = 0;
+        if (need_zip64) {
+            zip64_len = build_zip64_extra_field(
+                extra_field + extra_field_len,
+                sizeof(extra_field) - extra_field_len,
+                entry->compressed_size,
+                entry->uncompressed_size,
+                entry->local_header_offset);
+
+            if (zip64_len == 0) {
+                fprintf(stderr, "Failed to build ZIP64 extra field for %s\n", entry->filename);
+                return -1;
+            }
+            extra_field_len += zip64_len;
+        }
 
         header.signature = ZIP_CENTRAL_DIR_HEADER_SIG;
         header.version_made_by = (3 << 8) | 63;  // Unix (3) + version 6.3
@@ -103,9 +145,24 @@ int write_central_directory(struct burst_writer *writer) {
         header.last_mod_date = entry->last_mod_date;
         header.crc32 = entry->crc32;
 
-        // Phase 1: Use 32-bit sizes
-        header.compressed_size = (uint32_t)entry->compressed_size;
-        header.uncompressed_size = (uint32_t)entry->uncompressed_size;
+        // Set sizes and offset - use 0xFFFFFFFF marker if ZIP64 is needed
+        if (entry->compressed_size > 0xFFFFFFFF) {
+            header.compressed_size = 0xFFFFFFFF;
+        } else {
+            header.compressed_size = (uint32_t)entry->compressed_size;
+        }
+
+        if (entry->uncompressed_size > 0xFFFFFFFF) {
+            header.uncompressed_size = 0xFFFFFFFF;
+        } else {
+            header.uncompressed_size = (uint32_t)entry->uncompressed_size;
+        }
+
+        if (entry->local_header_offset > 0xFFFFFFFF) {
+            header.local_header_offset = 0xFFFFFFFF;
+        } else {
+            header.local_header_offset = (uint32_t)entry->local_header_offset;
+        }
 
         header.filename_length = strlen(entry->filename);
         header.extra_field_length = extra_field_len;
@@ -113,7 +170,6 @@ int write_central_directory(struct burst_writer *writer) {
         header.disk_number_start = 0;
         header.internal_file_attributes = 0;
         header.external_file_attributes = entry->unix_mode << 16;  // Unix mode in upper 16 bits
-        header.local_header_offset = (uint32_t)entry->local_header_offset;
 
         // Write central directory header
         if (burst_writer_write(writer, &header, sizeof(header)) != 0) {
@@ -125,7 +181,7 @@ int write_central_directory(struct burst_writer *writer) {
             return -1;
         }
 
-        // Write extra field
+        // Write extra field (Unix + ZIP64 if present)
         if (extra_field_len > 0) {
             if (burst_writer_write(writer, extra_field, extra_field_len) != 0) {
                 return -1;
@@ -136,19 +192,56 @@ int write_central_directory(struct burst_writer *writer) {
     return 0;
 }
 
-int write_end_central_directory(struct burst_writer *writer, uint64_t central_dir_start) {
+int write_zip64_end_central_directory(struct burst_writer *writer,
+                                      uint64_t central_dir_start,
+                                      uint64_t central_dir_size) {
+    struct zip64_end_central_dir eocd64;
+    memset(&eocd64, 0, sizeof(eocd64));
+
+    eocd64.signature = ZIP_ZIP64_END_CENTRAL_DIR_SIG;
+    eocd64.eocd64_size = sizeof(eocd64) - 12;  // Size of remaining structure (44 bytes)
+    eocd64.version_made_by = (3 << 8) | ZIP_VERSION_ZSTD;  // Unix (3) + version 6.3
+    eocd64.version_needed = ZIP_VERSION_ZSTD;
+    eocd64.disk_number = 0;
+    eocd64.disk_with_cd = 0;
+    eocd64.num_entries_this_disk = writer->num_files;
+    eocd64.num_entries_total = writer->num_files;
+    eocd64.central_dir_size = central_dir_size;
+    eocd64.central_dir_offset = central_dir_start;
+
+    return burst_writer_write(writer, &eocd64, sizeof(eocd64));
+}
+
+int write_zip64_end_central_directory_locator(struct burst_writer *writer,
+                                              uint64_t eocd64_offset) {
+    struct zip64_end_central_dir_locator locator;
+    memset(&locator, 0, sizeof(locator));
+
+    locator.signature = ZIP_ZIP64_END_CENTRAL_DIR_LOCATOR_SIG;
+    locator.disk_with_eocd64 = 0;
+    locator.eocd64_offset = eocd64_offset;
+    locator.total_disks = 1;
+
+    return burst_writer_write(writer, &locator, sizeof(locator));
+}
+
+int write_end_central_directory(struct burst_writer *writer,
+                                uint64_t central_dir_start,
+                                uint64_t central_dir_size) {
     struct zip_end_central_dir eocd;
     memset(&eocd, 0, sizeof(eocd));
-
-    uint64_t central_dir_size = (writer->current_offset + writer->buffer_used) - central_dir_start;
 
     eocd.signature = ZIP_END_CENTRAL_DIR_SIG;
     eocd.disk_number = 0;
     eocd.disk_with_cd = 0;
-    eocd.num_entries_this_disk = (uint16_t)writer->num_files;
-    eocd.num_entries_total = (uint16_t)writer->num_files;
-    eocd.central_dir_size = (uint32_t)central_dir_size;
-    eocd.central_dir_offset = (uint32_t)central_dir_start;
+
+    // Use actual values when they fit in 32-bit fields, otherwise 0xFFFF/0xFFFFFFFF
+    // The ZIP64 EOCD always has the authoritative values, but we include actual
+    // values here for compatibility with tools that check both
+    eocd.num_entries_this_disk = (writer->num_files > 0xFFFE) ? 0xFFFF : (uint16_t)writer->num_files;
+    eocd.num_entries_total = (writer->num_files > 0xFFFE) ? 0xFFFF : (uint16_t)writer->num_files;
+    eocd.central_dir_size = (central_dir_size > 0xFFFFFFFE) ? 0xFFFFFFFF : (uint32_t)central_dir_size;
+    eocd.central_dir_offset = (central_dir_start > 0xFFFFFFFE) ? 0xFFFFFFFF : (uint32_t)central_dir_start;
     eocd.comment_length = 0;
 
     return burst_writer_write(writer, &eocd, sizeof(eocd));
@@ -279,4 +372,67 @@ size_t build_unix_extra_field(uint8_t *buffer, size_t buffer_size, uint32_t uid,
     buffer[offset++] = (gid >> 24) & 0xFF;
 
     return extra_field_size;
+}
+
+size_t build_zip64_extra_field(uint8_t *buffer, size_t buffer_size,
+                               uint64_t compressed_size,
+                               uint64_t uncompressed_size,
+                               uint64_t local_header_offset) {
+    // ZIP64 extended information extra field (0x0001) format:
+    //   Header ID:  0x0001 (2 bytes)
+    //   Data Size:  Size of following data (2 bytes)
+    //   Uncompressed Size: (8 bytes) - only if original field is 0xFFFFFFFF
+    //   Compressed Size:   (8 bytes) - only if original field is 0xFFFFFFFF
+    //   Local Header Offset: (8 bytes) - only if original field is 0xFFFFFFFF
+    //   Disk Start Number: (4 bytes) - only if original field is 0xFFFF (not used in BURST)
+    //
+    // Fields must appear in the order listed above, but only include those that overflow.
+
+    // Determine which fields need to be included
+    bool need_uncompressed = (uncompressed_size > 0xFFFFFFFF);
+    bool need_compressed = (compressed_size > 0xFFFFFFFF);
+    bool need_offset = (local_header_offset > 0xFFFFFFFF);
+
+    // If no fields overflow, no ZIP64 extra field is needed
+    if (!need_uncompressed && !need_compressed && !need_offset) {
+        return 0;
+    }
+
+    // Calculate data size (excluding 4-byte header)
+    size_t data_size = 0;
+    if (need_uncompressed) data_size += 8;
+    if (need_compressed) data_size += 8;
+    if (need_offset) data_size += 8;
+
+    size_t total_size = 4 + data_size;  // Header ID (2) + Data Size (2) + data
+
+    if (buffer_size < total_size) {
+        return 0;  // Buffer too small
+    }
+
+    size_t offset = 0;
+
+    // Header ID (0x0001) - little-endian
+    buffer[offset++] = ZIP_EXTRA_ZIP64_ID & 0xFF;
+    buffer[offset++] = (ZIP_EXTRA_ZIP64_ID >> 8) & 0xFF;
+
+    // Data size - little-endian
+    buffer[offset++] = data_size & 0xFF;
+    buffer[offset++] = (data_size >> 8) & 0xFF;
+
+    // Add fields in required order: uncompressed, compressed, offset
+    if (need_uncompressed) {
+        memcpy(buffer + offset, &uncompressed_size, 8);
+        offset += 8;
+    }
+    if (need_compressed) {
+        memcpy(buffer + offset, &compressed_size, 8);
+        offset += 8;
+    }
+    if (need_offset) {
+        memcpy(buffer + offset, &local_header_offset, 8);
+        offset += 8;
+    }
+
+    return total_size;
 }

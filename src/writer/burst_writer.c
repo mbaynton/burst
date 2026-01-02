@@ -194,11 +194,9 @@ int burst_writer_add_file(struct burst_writer *writer,
         uint64_t space_until_boundary = next_boundary - write_pos;
 
         // Space needed: current LFH + data descriptor + minimum padding LFH
-        // The data descriptor is 16 bytes (even for STORE method, for consistency)
-        // It's possible we could further optimize this in future, for example by computing
-        // space needed more precisely based on the data that will follow this file's LFH and
-        // padding options for the data type following this file's LFH.
-        const size_t data_descriptor_size = sizeof(struct zip_data_descriptor);
+        // Use worst-case ZIP64 data descriptor size (24 bytes) to ensure we have
+        // enough space regardless of the final file size
+        const size_t data_descriptor_size = sizeof(struct zip_data_descriptor_zip64);  // 24 bytes
         size_t space_needed = (size_t)lfh_len + data_descriptor_size + PADDING_LFH_MIN_SIZE;
 
         if (space_until_boundary < space_needed) {
@@ -383,13 +381,20 @@ int burst_writer_add_file(struct burst_writer *writer,
     // (that space is outside any ZIP file entry).
     // Note: This check is skipped for header-only files as they have no compressed data
     // where we could insert skippable frames.
+
+    // Determine if ZIP64 descriptor is needed based on actual sizes
+    bool use_zip64_descriptor = (entry->compressed_size > 0xFFFFFFFF) ||
+                                (entry->uncompressed_size > 0xFFFFFFFF);
+    entry->used_zip64_descriptor = use_zip64_descriptor;
+
     uint64_t write_pos = alignment_get_write_position(writer);
     uint64_t next_boundary = alignment_next_boundary(write_pos);
     uint64_t space_until_boundary = next_boundary - write_pos;
 
-    // Space needed: data descriptor (16 bytes) + minimum padding LFH (44 bytes)
-    // The next file's entry check will insert a padding LFH if its actual header is larger
-    const size_t descriptor_size = sizeof(struct zip_data_descriptor);
+    // Space needed: data descriptor + minimum padding LFH (44 bytes)
+    // Use actual descriptor size based on whether ZIP64 is needed
+    size_t descriptor_size = get_data_descriptor_size(entry->compressed_size,
+                                                      entry->uncompressed_size);
     size_t space_needed = descriptor_size + PADDING_LFH_MIN_SIZE;
 
     // If insufficient space, pad current file to boundary so descriptor + next header
@@ -412,8 +417,9 @@ int burst_writer_add_file(struct burst_writer *writer,
     }
 
 write_descriptor:
-    // Write data descriptor
-    if (write_data_descriptor(writer, entry->crc32, entry->compressed_size, entry->uncompressed_size) != 0) {
+    // Write data descriptor (use ZIP64 if sizes exceed 32-bit limit)
+    if (write_data_descriptor(writer, entry->crc32, entry->compressed_size,
+                             entry->uncompressed_size, entry->used_zip64_descriptor) != 0) {
         free(entry->filename);
         return -1;
     }
@@ -512,6 +518,9 @@ int burst_writer_add_symlink(struct burst_writer *writer,
     entry->uid = uid;
     entry->gid = gid;
 
+    // Symlinks don't use data descriptors
+    entry->used_zip64_descriptor = false;
+
     // Write the pre-constructed local file header
     if (burst_writer_write(writer, lfh, lfh_len) < 0) {
         free(entry->filename);
@@ -552,8 +561,24 @@ int burst_writer_finalize(struct burst_writer *writer) {
         return -1;
     }
 
-    // Write end of central directory record
-    if (write_end_central_directory(writer, central_dir_start) != 0) {
+    // Calculate central directory size
+    uint64_t central_dir_end = writer->current_offset + writer->buffer_used;
+    uint64_t central_dir_size = central_dir_end - central_dir_start;
+
+    // Always write ZIP64 EOCD structures
+    // Write ZIP64 End of Central Directory Record
+    uint64_t eocd64_offset = central_dir_end;
+    if (write_zip64_end_central_directory(writer, central_dir_start, central_dir_size) != 0) {
+        return -1;
+    }
+
+    // Write ZIP64 End of Central Directory Locator
+    if (write_zip64_end_central_directory_locator(writer, eocd64_offset) != 0) {
+        return -1;
+    }
+
+    // Write standard End of Central Directory record (with ZIP64 markers)
+    if (write_end_central_directory(writer, central_dir_start, central_dir_size) != 0) {
         return -1;
     }
 
