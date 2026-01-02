@@ -545,6 +545,122 @@ int burst_writer_add_symlink(struct burst_writer *writer,
     return 0;
 }
 
+/*
+burst_writer_add_directory adds a directory entry to the BURST archive.
+Directories are header-only entries (like empty files and symlinks):
+- Use STORE method (no compression)
+- Have zero content (no compressed data, no data descriptor)
+- Store all metadata in the local file header
+- Require trailing slash in filename
+- May need padding LFH for alignment
+
+Unlike symlinks which may have target data, directories have NO data bytes at all.
+*/
+int burst_writer_add_directory(struct burst_writer *writer,
+                                struct zip_local_header *lfh,
+                                int lfh_len,
+                                uint32_t unix_mode,
+                                uint32_t uid,
+                                uint32_t gid) {
+    if (!writer || !lfh || lfh_len <= 0) {
+        return -1;
+    }
+
+    // Verify this is a directory entry (filename ends with '/')
+    const char *filename = (const char *)((uint8_t *)lfh + sizeof(struct zip_local_header));
+    if (lfh->filename_length == 0 || filename[lfh->filename_length - 1] != '/') {
+        fprintf(stderr, "Error: Directory filename must end with '/'\n");
+        return -1;
+    }
+
+    // Verify directory has correct method and sizes
+    if (lfh->compression_method != ZIP_METHOD_STORE ||
+        lfh->compressed_size != 0 ||
+        lfh->uncompressed_size != 0) {
+        fprintf(stderr, "Error: Directory must use STORE method with zero sizes\n");
+        return -1;
+    }
+
+    // Expand file tracking array if needed
+    if (writer->num_files >= writer->files_capacity) {
+        size_t new_capacity = writer->files_capacity * 2;
+        struct file_entry *new_files = realloc(writer->files, new_capacity * sizeof(struct file_entry));
+        if (!new_files) {
+            fprintf(stderr, "Failed to expand file tracking array\n");
+            return -1;
+        }
+        writer->files = new_files;
+        writer->files_capacity = new_capacity;
+    }
+
+    // Initialize file entry
+    struct file_entry *entry = &writer->files[writer->num_files];
+    memset(entry, 0, sizeof(struct file_entry));
+
+    // Extract filename from local file header
+    entry->filename = strndup(filename, lfh->filename_length);
+    if (!entry->filename) {
+        return -1;
+    }
+
+    // Check alignment: lfh + minimum padding LFH for next file
+    // Directories have no data, so just need room for header
+    {
+        uint64_t write_pos = alignment_get_write_position(writer);
+        uint64_t next_boundary = alignment_next_boundary(write_pos);
+        uint64_t space_until_boundary = next_boundary - write_pos;
+
+        size_t space_needed = (size_t)lfh_len + PADDING_LFH_MIN_SIZE;
+
+        if (space_until_boundary < space_needed) {
+            // Not enough space - write a padding LFH to advance to boundary
+            if (write_padding_lfh(writer, (size_t)space_until_boundary) != 0) {
+                free(entry->filename);
+                return -1;
+            }
+        }
+    }
+
+    entry->local_header_offset = writer->current_offset + writer->buffer_used;
+
+    // Copy header fields from caller-provided local file header
+    entry->compression_method = lfh->compression_method;
+    entry->version_needed = lfh->version_needed;
+    entry->general_purpose_flags = lfh->flags;
+    entry->last_mod_time = lfh->last_mod_time;
+    entry->last_mod_date = lfh->last_mod_date;
+
+    // Directories have zero sizes and CRC
+    entry->crc32 = 0;
+    entry->compressed_size = 0;
+    entry->uncompressed_size = 0;
+
+    // Store Unix metadata for central directory
+    // CRITICAL: Ensure S_IFDIR bit is set in unix_mode
+    entry->unix_mode = unix_mode;
+    entry->uid = uid;
+    entry->gid = gid;
+
+    // Directories don't use data descriptors
+    entry->used_zip64_descriptor = false;
+
+    // Write the pre-constructed local file header
+    if (burst_writer_write(writer, lfh, lfh_len) < 0) {
+        free(entry->filename);
+        return -1;
+    }
+
+    // No data content for directories
+    // No data descriptor for directories
+
+    // Statistics: directories don't contribute to compressed/uncompressed totals
+    writer->num_files++;
+
+    printf("Added directory: %s\n", entry->filename);
+
+    return 0;
+}
+
 int burst_writer_finalize(struct burst_writer *writer) {
     if (!writer) {
         return -1;
