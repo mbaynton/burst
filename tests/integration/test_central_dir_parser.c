@@ -148,7 +148,11 @@ static void test_zip_file(const char *zip_name, const char *description) {
 }
 
 void test_parse_burst_writer_zip(void) {
-    test_zip_file("burst_writer32.zip", "BURST writer archive (Zstandard)");
+    test_zip_file("burst_writer32.zip", "BURST writer archive (Zstandard, non-ZIP64)");
+}
+
+void test_parse_burst_writer_zip64(void) {
+    test_zip_file("burst_writer64.zip", "BURST writer archive (Zstandard, ZIP64)");
 }
 
 void test_parse_info_zip_writer_zip(void) {
@@ -180,6 +184,7 @@ int main(int argc, char **argv) {
     UNITY_BEGIN();
 
     RUN_TEST(test_parse_burst_writer_zip);
+    RUN_TEST(test_parse_burst_writer_zip64);
     RUN_TEST(test_parse_info_zip_writer_zip);
 
     return UNITY_END();

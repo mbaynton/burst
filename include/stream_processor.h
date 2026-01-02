@@ -97,6 +97,9 @@ struct file_context {
     uint8_t *symlink_buffer;    // Buffer for symlink target path
     size_t symlink_buffer_size; // Allocated size
     size_t symlink_bytes_read;  // Bytes read so far
+
+    // ZIP64 tracking
+    bool uses_zip64_descriptor; // True if data descriptor is 24 bytes (ZIP64), false if 16 bytes
 };
 
 /**

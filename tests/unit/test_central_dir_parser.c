@@ -202,22 +202,45 @@ void test_find_eocd_not_found(void) {
 
 void test_find_eocd_zip64_detected(void) {
     // Create buffer with ZIP64 EOCD Locator before standard EOCD
+    // Since we now support ZIP64, the parser will attempt to parse it.
+    // However, this test data doesn't contain a valid ZIP64 EOCD record,
+    // so parsing will fail with truncated error (the locator points to garbage).
     uint8_t buffer[200];
     memcpy(buffer, minimal_zip, sizeof(minimal_zip));
 
-    // Insert ZIP64 EOCD Locator signature 20 bytes before EOCD
-    // EOCD is at offset 102, so locator signature at 82
-    buffer[82] = 0x50;
+    // Insert ZIP64 EOCD Locator 20 bytes before EOCD
+    // EOCD is at offset 102, so locator starts at 82
+    // Locator: signature (4) + disk_with_eocd64 (4) + eocd64_offset (8) + total_disks (4) = 20 bytes
+    buffer[82] = 0x50;  // signature
     buffer[83] = 0x4b;
     buffer[84] = 0x06;
     buffer[85] = 0x07;
+    buffer[86] = 0x00;  // disk_with_eocd64
+    buffer[87] = 0x00;
+    buffer[88] = 0x00;
+    buffer[89] = 0x00;
+    buffer[90] = 0x00;  // eocd64_offset (pointing to offset 0, which is invalid)
+    buffer[91] = 0x00;
+    buffer[92] = 0x00;
+    buffer[93] = 0x00;
+    buffer[94] = 0x00;
+    buffer[95] = 0x00;
+    buffer[96] = 0x00;
+    buffer[97] = 0x00;
+    buffer[98] = 0x01;  // total_disks
+    buffer[99] = 0x00;
+    buffer[100] = 0x00;
+    buffer[101] = 0x00;
 
     struct central_dir_parse_result result;
     int rc = central_dir_parse(buffer, sizeof(minimal_zip),
                                sizeof(minimal_zip), BURST_BASE_PART_SIZE, &result);
 
-    TEST_ASSERT_EQUAL_INT(CENTRAL_DIR_PARSE_ERR_ZIP64_UNSUPPORTED, rc);
+    // ZIP64 is detected, but parsing fails because the eocd64_offset (0) points
+    // to data that doesn't have a valid ZIP64 EOCD signature
     TEST_ASSERT_TRUE(result.is_zip64);
+    // The parse will fail because offset 0 contains LFH signature, not ZIP64 EOCD signature
+    TEST_ASSERT_EQUAL_INT(CENTRAL_DIR_PARSE_ERR_INVALID_SIGNATURE, rc);
 }
 
 // =============================================================================

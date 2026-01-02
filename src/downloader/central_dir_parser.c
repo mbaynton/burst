@@ -5,8 +5,9 @@
 #include <stdio.h>
 #include <sys/stat.h>
 
-// ZIP64 End of Central Directory Locator signature
+// ZIP64 signatures and constants
 #define ZIP64_EOCD_LOCATOR_SIG 0x07064b50
+#define ZIP64_EOCD_SIG 0x06064b50
 
 /**
  * Parse Unix extra field (0x7875) to extract uid/gid.
@@ -84,17 +85,131 @@ static bool parse_unix_extra_field(const uint8_t *extra_field, uint16_t extra_le
 }
 
 /**
- * Search backwards from buffer end for EOCD signature.
- * Also detects ZIP64 archives.
+ * Parse ZIP64 extended information extra field (0x0001) from central directory.
  *
- * @param buffer       Buffer to search
- * @param buffer_size  Size of buffer
- * @param eocd_offset  Output: offset of EOCD within buffer
- * @param is_zip64     Output: whether ZIP64 locator was detected
+ * The ZIP64 extra field contains 64-bit values for fields that overflow 32-bit.
+ * Fields appear in order: uncompressed, compressed, offset, disk_start.
+ * Only fields whose 32-bit counterpart is 0xFFFFFFFF are present.
+ *
+ * @param extra_field    Pointer to extra field data
+ * @param extra_len      Length of extra field data
+ * @param header         Central directory header (to check which fields overflow)
+ * @param compressed_size    Output: 64-bit compressed size (unchanged if not present)
+ * @param uncompressed_size  Output: 64-bit uncompressed size (unchanged if not present)
+ * @param local_header_offset Output: 64-bit offset (unchanged if not present)
+ * @return true if ZIP64 extra field was found, false otherwise
+ */
+static bool parse_zip64_extra_field(const uint8_t *extra_field, uint16_t extra_len,
+                                    const struct zip_central_header *header,
+                                    uint64_t *compressed_size,
+                                    uint64_t *uncompressed_size,
+                                    uint64_t *local_header_offset) {
+    const uint8_t *ptr = extra_field;
+    const uint8_t *end = extra_field + extra_len;
+
+    while (ptr + 4 <= end) {
+        // Read header ID (2 bytes) and data size (2 bytes)
+        uint16_t header_id;
+        uint16_t data_size;
+        memcpy(&header_id, ptr, sizeof(uint16_t));
+        memcpy(&data_size, ptr + 2, sizeof(uint16_t));
+        ptr += 4;
+
+        // Check if this is the ZIP64 extra field (0x0001)
+        if (header_id == ZIP_EXTRA_ZIP64_ID) {
+            // Verify we have enough data
+            if (ptr + data_size > end) {
+                return false;
+            }
+
+            // Parse ZIP64 values in order:
+            // 1. Original Size (if uncompressed_size == 0xFFFFFFFF)
+            // 2. Compressed Size (if compressed_size == 0xFFFFFFFF)
+            // 3. Relative Header Offset (if local_header_offset == 0xFFFFFFFF)
+            // 4. Disk Start Number (if disk_number_start == 0xFFFF) - not used
+            const uint8_t *data_ptr = ptr;
+            const uint8_t *data_end = ptr + data_size;
+
+            if (header->uncompressed_size == 0xFFFFFFFF) {
+                if (data_ptr + 8 > data_end) return false;
+                memcpy(uncompressed_size, data_ptr, sizeof(uint64_t));
+                data_ptr += 8;
+            }
+
+            if (header->compressed_size == 0xFFFFFFFF) {
+                if (data_ptr + 8 > data_end) return false;
+                memcpy(compressed_size, data_ptr, sizeof(uint64_t));
+                data_ptr += 8;
+            }
+
+            if (header->local_header_offset == 0xFFFFFFFF) {
+                if (data_ptr + 8 > data_end) return false;
+                memcpy(local_header_offset, data_ptr, sizeof(uint64_t));
+                // data_ptr += 8;  // Not needed, last field we care about
+            }
+
+            return true;
+        }
+
+        // Skip to next extra field entry
+        if (ptr + data_size > end) {
+            break;
+        }
+        ptr += data_size;
+    }
+
+    return false;
+}
+
+/**
+ * Parse ZIP64 End of Central Directory record.
+ *
+ * @param buffer         Buffer containing ZIP64 EOCD
+ * @param buffer_size    Size of buffer
+ * @param eocd64_offset  Offset of ZIP64 EOCD within buffer
+ * @param cd_offset      Output: offset of central directory in archive
+ * @param num_entries    Output: number of entries (64-bit)
+ * @param cd_size        Output: size of central directory (64-bit)
+ * @return Error code
+ */
+static int parse_zip64_eocd(const uint8_t *buffer, size_t buffer_size,
+                            size_t eocd64_offset,
+                            uint64_t *cd_offset, uint64_t *num_entries,
+                            uint64_t *cd_size) {
+    // ZIP64 EOCD is 56 bytes minimum
+    if (eocd64_offset + sizeof(struct zip64_end_central_dir) > buffer_size) {
+        return CENTRAL_DIR_PARSE_ERR_TRUNCATED;
+    }
+
+    const struct zip64_end_central_dir *eocd64 =
+        (const struct zip64_end_central_dir *)(buffer + eocd64_offset);
+
+    // Verify signature
+    if (eocd64->signature != ZIP64_EOCD_SIG) {
+        return CENTRAL_DIR_PARSE_ERR_INVALID_SIGNATURE;
+    }
+
+    // Extract metadata
+    *cd_offset = eocd64->central_dir_offset;
+    *num_entries = eocd64->num_entries_total;
+    *cd_size = eocd64->central_dir_size;
+
+    return CENTRAL_DIR_PARSE_SUCCESS;
+}
+
+/**
+ * Search backwards from buffer end for EOCD signature.
+ * Also detects ZIP64 archives and returns locator offset.
+ *
+ * @param buffer           Buffer to search
+ * @param buffer_size      Size of buffer
+ * @param eocd_offset      Output: offset of EOCD within buffer
+ * @param is_zip64         Output: whether ZIP64 locator was detected
+ * @param locator_offset   Output: offset of ZIP64 locator within buffer (if ZIP64)
  * @return Error code
  */
 static int find_eocd(const uint8_t *buffer, size_t buffer_size,
-                     size_t *eocd_offset, bool *is_zip64) {
+                     size_t *eocd_offset, bool *is_zip64, size_t *locator_offset) {
     if (buffer_size < sizeof(struct zip_end_central_dir)) {
         return CENTRAL_DIR_PARSE_ERR_NO_EOCD;
     }
@@ -113,15 +228,17 @@ static int find_eocd(const uint8_t *buffer, size_t buffer_size,
 
             // Check for ZIP64 locator 20 bytes before EOCD
             if (*eocd_offset >= 20) {
-                uint32_t locator_sig;
-                memcpy(&locator_sig, search_ptr - 20, sizeof(locator_sig));
-                if (locator_sig == ZIP64_EOCD_LOCATOR_SIG) {
+                uint32_t loc_sig;
+                memcpy(&loc_sig, search_ptr - 20, sizeof(loc_sig));
+                if (loc_sig == ZIP64_EOCD_LOCATOR_SIG) {
                     *is_zip64 = true;
-                    return CENTRAL_DIR_PARSE_ERR_ZIP64_UNSUPPORTED;
+                    *locator_offset = *eocd_offset - 20;
+                    return CENTRAL_DIR_PARSE_SUCCESS;  // Now we support ZIP64!
                 }
             }
 
             *is_zip64 = false;
+            *locator_offset = 0;
             return CENTRAL_DIR_PARSE_SUCCESS;
         }
         search_ptr--;
@@ -173,8 +290,8 @@ static int parse_eocd(const uint8_t *buffer, size_t buffer_size,
  * @param buffer_size  Size of buffer
  * @param cd_offset    Offset of central directory in archive (absolute)
  * @param buffer_offset Offset within the archive that buffer[0] represents
- * @param num_entries  Number of entries to parse
- * @param cd_size      Size of central directory
+ * @param num_entries  Number of entries to parse (64-bit for ZIP64 support)
+ * @param cd_size      Size of central directory (64-bit for ZIP64 support)
  * @param part_size    Part size in bytes
  * @param files        Output: array of file metadata
  * @param num_files    Output: number of files parsed
@@ -183,7 +300,7 @@ static int parse_eocd(const uint8_t *buffer, size_t buffer_size,
 static int parse_central_directory(
     const uint8_t *buffer, size_t buffer_size,
     uint64_t cd_offset, uint64_t buffer_offset,
-    uint32_t num_entries, uint32_t cd_size,
+    uint64_t num_entries, uint64_t cd_size,
     uint64_t part_size,
     struct file_metadata **files, size_t *num_files)
 {
@@ -207,7 +324,7 @@ static int parse_central_directory(
     const uint8_t *ptr = buffer + cd_start_in_buffer;
     const uint8_t *cd_end = ptr + cd_size;
 
-    for (uint32_t i = 0; i < num_entries; i++) {
+    for (uint64_t i = 0; i < num_entries; i++) {
         // Verify we have enough space for fixed header
         if (ptr + sizeof(struct zip_central_header) > cd_end) {
             // Cleanup and return error
@@ -231,15 +348,13 @@ static int parse_central_directory(
             return CENTRAL_DIR_PARSE_ERR_INVALID_SIGNATURE;
         }
 
-        // Extract metadata
+        // Extract metadata (initial 32-bit values, may be overwritten by ZIP64)
         file_array[i].local_header_offset = header->local_header_offset;
         file_array[i].compressed_size = header->compressed_size;
         file_array[i].uncompressed_size = header->uncompressed_size;
         file_array[i].crc32 = header->crc32;
         file_array[i].compression_method = header->compression_method;
-
-        // Calculate part index
-        file_array[i].part_index = (uint32_t)(header->local_header_offset / part_size);
+        file_array[i].uses_zip64_descriptor = false;  // Will be set if ZIP64 extra field found
 
         // Extract Unix mode from external_file_attributes
         // Unix stores mode in upper 16 bits of external_file_attributes
@@ -291,13 +406,26 @@ static int parse_central_directory(
         memcpy(file_array[i].filename, ptr, header->filename_length);
         file_array[i].filename[header->filename_length] = '\0';
 
-        // Parse extra field for Unix uid/gid (0x7875)
+        // Parse extra fields
         if (header->extra_field_length > 0) {
             const uint8_t *extra_field_ptr = ptr + header->filename_length;
+
+            // Parse Unix uid/gid (0x7875)
             file_array[i].has_unix_extra = parse_unix_extra_field(
                 extra_field_ptr, header->extra_field_length,
                 &file_array[i].uid, &file_array[i].gid);
+
+            // Parse ZIP64 extra field (0x0001)
+            // The presence of ZIP64 extra field indicates the file uses ZIP64 data descriptor
+            file_array[i].uses_zip64_descriptor = parse_zip64_extra_field(
+                extra_field_ptr, header->extra_field_length, header,
+                &file_array[i].compressed_size,
+                &file_array[i].uncompressed_size,
+                &file_array[i].local_header_offset);
         }
+
+        // Calculate part index (must be done after ZIP64 parsing updates local_header_offset)
+        file_array[i].part_index = (uint32_t)(file_array[i].local_header_offset / part_size);
 
         // Skip past variable-length fields
         ptr += variable_len;
@@ -467,35 +595,83 @@ int central_dir_parse(const uint8_t *buffer, size_t buffer_size,
 
     // Find EOCD
     size_t eocd_offset;
+    size_t locator_offset = 0;
     bool is_zip64 = false;
-    int rc = find_eocd(buffer, buffer_size, &eocd_offset, &is_zip64);
+    int rc = find_eocd(buffer, buffer_size, &eocd_offset, &is_zip64, &locator_offset);
     if (rc != CENTRAL_DIR_PARSE_SUCCESS) {
         result->error_code = rc;
         result->is_zip64 = is_zip64;
         if (rc == CENTRAL_DIR_PARSE_ERR_NO_EOCD) {
             snprintf(result->error_message, sizeof(result->error_message),
                     "No End of Central Directory signature found in buffer");
-        } else if (rc == CENTRAL_DIR_PARSE_ERR_ZIP64_UNSUPPORTED) {
-            snprintf(result->error_message, sizeof(result->error_message),
-                    "ZIP64 archives are not yet supported");
         }
         return rc;
     }
 
-    // Parse EOCD
+    result->is_zip64 = is_zip64;
+
+    // Parse EOCD (ZIP64 or standard)
     uint64_t cd_offset;
-    uint32_t num_entries, cd_size;
-    rc = parse_eocd(buffer, buffer_size, eocd_offset,
-                    &cd_offset, &num_entries, &cd_size);
-    if (rc != CENTRAL_DIR_PARSE_SUCCESS) {
-        result->error_code = rc;
-        snprintf(result->error_message, sizeof(result->error_message),
-                "Failed to parse EOCD at offset %zu", eocd_offset);
-        return rc;
+    uint64_t num_entries_64;
+    uint64_t cd_size_64;
+
+    if (is_zip64) {
+        // Parse ZIP64 EOCD locator to find ZIP64 EOCD offset
+        // The locator contains the absolute offset of the ZIP64 EOCD in the archive.
+        // We need to convert that to a buffer-relative offset.
+        if (locator_offset + sizeof(struct zip64_end_central_dir_locator) > buffer_size) {
+            result->error_code = CENTRAL_DIR_PARSE_ERR_TRUNCATED;
+            snprintf(result->error_message, sizeof(result->error_message),
+                    "ZIP64 EOCD Locator truncated at offset %zu", locator_offset);
+            return CENTRAL_DIR_PARSE_ERR_TRUNCATED;
+        }
+
+        const struct zip64_end_central_dir_locator *locator =
+            (const struct zip64_end_central_dir_locator *)(buffer + locator_offset);
+
+        // The locator contains the absolute archive offset of ZIP64 EOCD
+        uint64_t eocd64_archive_offset = locator->eocd64_offset;
+
+        // Calculate buffer's position within the archive
+        uint64_t buffer_offset = archive_size - buffer_size;
+
+        // Check if ZIP64 EOCD is within our buffer
+        if (eocd64_archive_offset < buffer_offset) {
+            result->error_code = CENTRAL_DIR_PARSE_ERR_TRUNCATED;
+            snprintf(result->error_message, sizeof(result->error_message),
+                    "ZIP64 EOCD at offset %llu is outside buffer (buffer starts at %llu)",
+                    (unsigned long long)eocd64_archive_offset,
+                    (unsigned long long)buffer_offset);
+            return CENTRAL_DIR_PARSE_ERR_TRUNCATED;
+        }
+
+        size_t eocd64_buffer_offset = (size_t)(eocd64_archive_offset - buffer_offset);
+
+        rc = parse_zip64_eocd(buffer, buffer_size, eocd64_buffer_offset,
+                              &cd_offset, &num_entries_64, &cd_size_64);
+        if (rc != CENTRAL_DIR_PARSE_SUCCESS) {
+            result->error_code = rc;
+            snprintf(result->error_message, sizeof(result->error_message),
+                    "Failed to parse ZIP64 EOCD at offset %zu", eocd64_buffer_offset);
+            return rc;
+        }
+    } else {
+        // Parse standard EOCD
+        uint32_t num_entries_32, cd_size_32;
+        rc = parse_eocd(buffer, buffer_size, eocd_offset,
+                        &cd_offset, &num_entries_32, &cd_size_32);
+        if (rc != CENTRAL_DIR_PARSE_SUCCESS) {
+            result->error_code = rc;
+            snprintf(result->error_message, sizeof(result->error_message),
+                    "Failed to parse EOCD at offset %zu", eocd_offset);
+            return rc;
+        }
+        num_entries_64 = num_entries_32;
+        cd_size_64 = cd_size_32;
     }
 
     result->central_dir_offset = cd_offset;
-    result->central_dir_size = cd_size;
+    result->central_dir_size = cd_size_64;
 
     // Calculate buffer's position within the archive
     // buffer contains the last buffer_size bytes of the archive
@@ -503,13 +679,13 @@ int central_dir_parse(const uint8_t *buffer, size_t buffer_size,
 
     // Parse central directory
     rc = parse_central_directory(buffer, buffer_size, cd_offset, buffer_offset,
-                                 num_entries, cd_size, part_size,
+                                 num_entries_64, cd_size_64, part_size,
                                  &result->files, &result->num_files);
     if (rc != CENTRAL_DIR_PARSE_SUCCESS) {
         result->error_code = rc;
         snprintf(result->error_message, sizeof(result->error_message),
-                "Failed to parse central directory: %u entries expected at offset %llu",
-                num_entries, (unsigned long long)cd_offset);
+                "Failed to parse central directory: %llu entries expected at offset %llu",
+                (unsigned long long)num_entries_64, (unsigned long long)cd_offset);
         return rc;
     }
 

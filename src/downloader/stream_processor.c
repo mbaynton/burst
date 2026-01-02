@@ -341,16 +341,25 @@ int part_processor_process_data(
                 break;
             }
 
-            case FRAME_ZIP_DATA_DESCRIPTOR:
+            case FRAME_ZIP_DATA_DESCRIPTOR: {
                 // End of current file
+                // Determine descriptor size based on ZIP64 status from central directory
+                size_t descriptor_size;
+                if (state->current_file && state->current_file->uses_zip64_descriptor) {
+                    descriptor_size = sizeof(struct zip_data_descriptor_zip64);  // 24 bytes
+                } else {
+                    descriptor_size = sizeof(struct zip_data_descriptor);  // 16 bytes
+                }
+
                 rc = handle_data_descriptor(state, ptr);
                 if (rc != STREAM_PROC_SUCCESS) {
                     return rc;
                 }
-                offset += sizeof(struct zip_data_descriptor);
-                state->bytes_processed += sizeof(struct zip_data_descriptor);
+                offset += descriptor_size;
+                state->bytes_processed += descriptor_size;
                 state->state = STATE_EXPECT_LOCAL_HEADER;
                 break;
+            }
 
             case FRAME_ZIP_LOCAL_HEADER:
                 // Next file started without data descriptor
@@ -678,6 +687,9 @@ static int open_output_file(struct part_processor_state *state,
     state->current_file->has_unix_mode = file_meta->has_unix_mode;
     state->current_file->has_unix_extra = file_meta->has_unix_extra;
     state->current_file->is_symlink = file_meta->is_symlink;
+
+    // Copy ZIP64 tracking from central directory
+    state->current_file->uses_zip64_descriptor = file_meta->uses_zip64_descriptor;
 
     // Symlinks: allocate buffer for target path instead of opening file
     if (file_meta->is_symlink) {

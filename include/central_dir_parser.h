@@ -116,6 +116,9 @@ struct file_metadata {
     bool has_unix_mode;                // True if unix_mode was extracted
     bool has_unix_extra;               // True if uid/gid were extracted from extra field
     bool is_symlink;                   // True if (unix_mode & S_IFMT) == S_IFLNK
+
+    // ZIP64 tracking
+    bool uses_zip64_descriptor;        // True if ZIP64 extra field present (data descriptor is 24 bytes)
 };
 
 /**
