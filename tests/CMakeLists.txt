@@ -158,6 +158,59 @@ add_test(NAME test_central_dir_parser COMMAND test_central_dir_parser)
 add_mocked_test(test_writer_chunking
     "${CMAKE_CURRENT_SOURCE_DIR}/mocks/compression_mock.h")
 
+# Entry processor test with mocked burst_writer functions
+# This tests error handling paths to prevent double-free bugs
+# We need a separate library without burst_writer.c since we mock those functions
+add_library(entry_processor_lib STATIC
+    ../src/writer/entry_processor.c
+    ../src/writer/zip_structures.c
+)
+target_include_directories(entry_processor_lib PUBLIC
+    ../include
+    ../src/writer
+)
+target_link_libraries(entry_processor_lib PUBLIC
+    ZLIB::ZLIB
+)
+
+# Generate mock for burst_writer functions
+set(burst_writer_mock_header "${CMAKE_CURRENT_SOURCE_DIR}/mocks/burst_writer_mock.h")
+set(burst_writer_mock_c "${CMAKE_CURRENT_BINARY_DIR}/mocks/Mock_burst_writer_mock.c")
+set(burst_writer_mock_h "${CMAKE_CURRENT_BINARY_DIR}/mocks/Mock_burst_writer_mock.h")
+
+add_custom_command(
+    OUTPUT ${burst_writer_mock_c} ${burst_writer_mock_h}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/mocks
+    COMMAND ${RUBY_EXECUTABLE} ${cmock_SOURCE_DIR}/lib/cmock.rb
+            -o${CMAKE_CURRENT_SOURCE_DIR}/cmock_config.yml
+            --mock_path=${CMAKE_CURRENT_BINARY_DIR}/mocks
+            ${burst_writer_mock_header}
+    DEPENDS ${burst_writer_mock_header} ${CMAKE_CURRENT_SOURCE_DIR}/cmock_config.yml
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    COMMENT "Generating mock for burst_writer_mock.h"
+)
+
+add_executable(test_entry_processor
+    unit/test_entry_processor.c
+    ${burst_writer_mock_c}
+)
+
+target_include_directories(test_entry_processor PRIVATE
+    ${CMAKE_CURRENT_BINARY_DIR}/mocks
+    ${CMAKE_CURRENT_SOURCE_DIR}/mocks
+    ../include
+    ../src/writer
+)
+
+target_link_libraries(test_entry_processor
+    entry_processor_lib
+    unity
+    cmock
+    ZLIB::ZLIB
+)
+
+add_test(NAME test_entry_processor COMMAND test_entry_processor)
+
 # Stream processor test with mocked BTRFS writer
 # Note: This test links against a modified downloader lib that excludes btrfs_writer.c
 # because we want to use the mocked version instead
@@ -357,6 +410,7 @@ add_test(NAME test_e2e_zip64
          WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 set_tests_properties(test_e2e_zip64 PROPERTIES
     LABELS "e2e;integration;s3;btrfs;slow"
+    DISABLED TRUE  # Disable by default, currently uses more disk than available in GHA
     TIMEOUT 1200)
 
 add_test(NAME test_e2e_unix_metadata

@@ -40,10 +40,12 @@ add_executable(burst-writer
     src/writer/zip_structures.c
     src/writer/compression.c
     src/writer/alignment.c
+    src/writer/entry_processor.c
 )
 
 target_include_directories(burst-writer PRIVATE
     ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src/writer
     ${ZSTD_INCLUDE_DIR}
 )
 
