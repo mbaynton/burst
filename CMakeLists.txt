@@ -61,6 +61,7 @@ add_executable(burst-writer-test-mode
     src/writer/zip_structures.c
     src/writer/compression.c
     src/writer/alignment.c
+    src/writer/entry_processor.c
 )
 
 target_include_directories(burst-writer-test-mode PRIVATE
