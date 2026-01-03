@@ -145,4 +145,4 @@ jobs:
         BURST_TEST_BUCKET: burst-integration-tests
         BURST_TEST_KEY_PREFIX: "ci-e2e-artifacts/"
         AWS_REGION: us-east-1
-      run: cd build && ctest -R "^${{ matrix.test }}$"
+      run: cd build && ctest -R "^${{ matrix.test }}$" --output-on-failure
