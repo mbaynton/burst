@@ -93,6 +93,7 @@ struct file_context {
     bool has_unix_mode;         // True if unix_mode should be applied
     bool has_unix_extra;        // True if uid/gid should be applied
     bool is_symlink;            // True if this is a symlink (handled differently)
+    bool is_directory;          // True if this is a directory entry (filename ends with '/')
 
     // Symlink content buffer (for STORE-method symlinks)
     uint8_t *symlink_buffer;    // Buffer for symlink target path

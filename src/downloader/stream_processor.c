@@ -681,11 +681,15 @@ static int open_output_file(struct part_processor_state *state,
     snprintf(state->current_file->filename, path_len, "%s/%s",
              state->output_dir, file_meta->filename);
 
-    // Ensure directory exists
+    // Check if this is a directory entry (filename ends with '/')
+    size_t filename_len = strlen(file_meta->filename);
+    bool is_directory = (filename_len > 0 && file_meta->filename[filename_len - 1] == '/');
+
+    // Ensure parent directory exists (handles archives with out-of-order directory entries)
     int rc = ensure_directory_exists(state->current_file->filename);
     if (rc != 0) {
         snprintf(state->error_message, sizeof(state->error_message),
-                 "Failed to create directory for %s", state->current_file->filename);
+                 "Failed to create parent directory for %s", state->current_file->filename);
         free(state->current_file->filename);
         free(state->current_file);
         state->current_file = NULL;
@@ -705,9 +709,46 @@ static int open_output_file(struct part_processor_state *state,
     state->current_file->has_unix_mode = file_meta->has_unix_mode;
     state->current_file->has_unix_extra = file_meta->has_unix_extra;
     state->current_file->is_symlink = file_meta->is_symlink;
+    state->current_file->is_directory = is_directory;
 
     // Copy ZIP64 tracking from central directory
     state->current_file->uses_zip64_descriptor = file_meta->uses_zip64_descriptor;
+
+    // Directories: create the directory and apply permissions, no file to open
+    if (is_directory) {
+        state->current_file->fd = -1;  // No file descriptor for directories
+
+        // Create the directory itself (parent dirs already ensured above)
+        if (mkdir(state->current_file->filename, 0755) != 0 && errno != EEXIST) {
+            snprintf(state->error_message, sizeof(state->error_message),
+                     "Failed to create directory %s: %s", state->current_file->filename, strerror(errno));
+            free(state->current_file->filename);
+            free(state->current_file);
+            state->current_file = NULL;
+            state->state = STATE_ERROR;
+            state->error_code = STREAM_PROC_ERR_IO;
+            return STREAM_PROC_ERR_IO;
+        }
+
+        // Apply Unix permissions if available
+        if (state->current_file->has_unix_mode) {
+            mode_t mode = state->current_file->unix_mode & 07777;
+            if (chmod(state->current_file->filename, mode) != 0) {
+                fprintf(stderr, "Warning: failed to set permissions on directory %s: %s\n",
+                        state->current_file->filename, strerror(errno));
+            }
+        }
+
+        // Apply Unix ownership if available and running as root
+        if (state->current_file->has_unix_extra && geteuid() == 0) {
+            if (chown(state->current_file->filename, state->current_file->uid, state->current_file->gid) != 0) {
+                fprintf(stderr, "Warning: failed to set ownership on directory %s: %s\n",
+                        state->current_file->filename, strerror(errno));
+            }
+        }
+
+        return STREAM_PROC_SUCCESS;
+    }
 
     // Symlinks: allocate buffer for target path instead of opening file
     if (file_meta->is_symlink) {
