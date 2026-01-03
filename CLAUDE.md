@@ -156,6 +156,9 @@ The [tests/CMakeLists.txt](tests/CMakeLists.txt) provides two helper functions:
    - Links with `unity`, `cmock`, and `burst_writer_lib`
    - Registers with CTest
 
+This file also lists all tests, along with their labels for filtering. When adding a new
+test, this file must always be updated to include it.
+
 ### Running Tests
 
 ```bash

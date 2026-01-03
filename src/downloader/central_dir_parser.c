@@ -324,13 +324,21 @@ static int parse_central_directory(
     const uint8_t *ptr = buffer + cd_start_in_buffer;
     const uint8_t *cd_end = ptr + cd_size;
 
+    uint64_t actual_entries = 0;
     for (uint64_t i = 0; i < num_entries; i++) {
+        // Check if we've reached the end of the CD
+        if (ptr >= cd_end) {
+            // Reached end of CD before num_entries - this is OK if num_entries was estimated
+            break;
+        }
+
         // Verify we have enough space for fixed header
         if (ptr + sizeof(struct zip_central_header) > cd_end) {
-            // Cleanup and return error
-            for (size_t j = 0; j < i; j++) {
-                free(file_array[j].filename);
+            // Reached end of CD with partial header - this is OK if we've parsed at least one entry
+            if (actual_entries > 0) {
+                break;  // Gracefully stop parsing
             }
+            // Cleanup and return error - no entries parsed
             free(file_array);
             return CENTRAL_DIR_PARSE_ERR_TRUNCATED;
         }
@@ -340,13 +348,16 @@ static int parse_central_directory(
 
         // Verify signature
         if (header->signature != ZIP_CENTRAL_DIR_HEADER_SIG) {
-            // Cleanup and return error
-            for (size_t j = 0; j < i; j++) {
-                free(file_array[j].filename);
+            // Invalid signature - might have reached end of CD or corrupted data
+            // If we've already parsed entries successfully, assume we've hit end-of-CD
+            if (actual_entries > 0) {
+                break;  // Gracefully stop parsing
             }
+            // First entry has bad signature - this is an error
             free(file_array);
             return CENTRAL_DIR_PARSE_ERR_INVALID_SIGNATURE;
         }
+        actual_entries++;
 
         // Extract metadata (initial 32-bit values, may be overwritten by ZIP64)
         file_array[i].local_header_offset = header->local_header_offset;
@@ -432,7 +443,7 @@ static int parse_central_directory(
     }
 
     *files = file_array;
-    *num_files = num_entries;
+    *num_files = actual_entries;
 
     return CENTRAL_DIR_PARSE_SUCCESS;
 }
@@ -573,22 +584,18 @@ static int build_part_map(
     return CENTRAL_DIR_PARSE_SUCCESS;
 }
 
-int central_dir_parse(const uint8_t *buffer, size_t buffer_size,
-                      uint64_t archive_size,
-                      uint64_t part_size,
-                      struct central_dir_parse_result *result) {
-    // Initialize result structure
-    if (result) {
-        memset(result, 0, sizeof(*result));
-    }
-
+int central_dir_parse_eocd_only(const uint8_t *buffer, size_t buffer_size,
+                                 uint64_t archive_size,
+                                 uint64_t *central_dir_offset,
+                                 uint64_t *central_dir_size,
+                                 uint64_t *num_entries,
+                                 bool *is_zip64,
+                                 char *error_msg) {
     // Validate inputs
-    if (!buffer || buffer_size == 0 || !result) {
-        if (result) {
-            result->error_code = CENTRAL_DIR_PARSE_ERR_INVALID_BUFFER;
-            snprintf(result->error_message, sizeof(result->error_message),
-                    "Invalid parameters: buffer=%p size=%zu result=%p",
-                    (void*)buffer, buffer_size, (void*)result);
+    if (!buffer || buffer_size == 0 || !central_dir_offset || !central_dir_size ||
+        !is_zip64 || !error_msg) {
+        if (error_msg) {
+            snprintf(error_msg, 256, "Invalid parameters");
         }
         return CENTRAL_DIR_PARSE_ERR_INVALID_BUFFER;
     }
@@ -596,33 +603,24 @@ int central_dir_parse(const uint8_t *buffer, size_t buffer_size,
     // Find EOCD
     size_t eocd_offset;
     size_t locator_offset = 0;
-    bool is_zip64 = false;
-    int rc = find_eocd(buffer, buffer_size, &eocd_offset, &is_zip64, &locator_offset);
+    *is_zip64 = false;
+    int rc = find_eocd(buffer, buffer_size, &eocd_offset, is_zip64, &locator_offset);
     if (rc != CENTRAL_DIR_PARSE_SUCCESS) {
-        result->error_code = rc;
-        result->is_zip64 = is_zip64;
         if (rc == CENTRAL_DIR_PARSE_ERR_NO_EOCD) {
-            snprintf(result->error_message, sizeof(result->error_message),
-                    "No End of Central Directory signature found in buffer");
+            snprintf(error_msg, 256, "No End of Central Directory signature found in buffer");
         }
         return rc;
     }
-
-    result->is_zip64 = is_zip64;
 
     // Parse EOCD (ZIP64 or standard)
     uint64_t cd_offset;
     uint64_t num_entries_64;
     uint64_t cd_size_64;
 
-    if (is_zip64) {
+    if (*is_zip64) {
         // Parse ZIP64 EOCD locator to find ZIP64 EOCD offset
-        // The locator contains the absolute offset of the ZIP64 EOCD in the archive.
-        // We need to convert that to a buffer-relative offset.
         if (locator_offset + sizeof(struct zip64_end_central_dir_locator) > buffer_size) {
-            result->error_code = CENTRAL_DIR_PARSE_ERR_TRUNCATED;
-            snprintf(result->error_message, sizeof(result->error_message),
-                    "ZIP64 EOCD Locator truncated at offset %zu", locator_offset);
+            snprintf(error_msg, 256, "ZIP64 EOCD Locator truncated at offset %zu", locator_offset);
             return CENTRAL_DIR_PARSE_ERR_TRUNCATED;
         }
 
@@ -637,8 +635,7 @@ int central_dir_parse(const uint8_t *buffer, size_t buffer_size,
 
         // Check if ZIP64 EOCD is within our buffer
         if (eocd64_archive_offset < buffer_offset) {
-            result->error_code = CENTRAL_DIR_PARSE_ERR_TRUNCATED;
-            snprintf(result->error_message, sizeof(result->error_message),
+            snprintf(error_msg, 256,
                     "ZIP64 EOCD at offset %llu is outside buffer (buffer starts at %llu)",
                     (unsigned long long)eocd64_archive_offset,
                     (unsigned long long)buffer_offset);
@@ -650,9 +647,8 @@ int central_dir_parse(const uint8_t *buffer, size_t buffer_size,
         rc = parse_zip64_eocd(buffer, buffer_size, eocd64_buffer_offset,
                               &cd_offset, &num_entries_64, &cd_size_64);
         if (rc != CENTRAL_DIR_PARSE_SUCCESS) {
-            result->error_code = rc;
-            snprintf(result->error_message, sizeof(result->error_message),
-                    "Failed to parse ZIP64 EOCD at offset %zu", eocd64_buffer_offset);
+            snprintf(error_msg, 256, "Failed to parse ZIP64 EOCD at offset %zu",
+                    eocd64_buffer_offset);
             return rc;
         }
     } else {
@@ -661,31 +657,147 @@ int central_dir_parse(const uint8_t *buffer, size_t buffer_size,
         rc = parse_eocd(buffer, buffer_size, eocd_offset,
                         &cd_offset, &num_entries_32, &cd_size_32);
         if (rc != CENTRAL_DIR_PARSE_SUCCESS) {
-            result->error_code = rc;
-            snprintf(result->error_message, sizeof(result->error_message),
-                    "Failed to parse EOCD at offset %zu", eocd_offset);
+            snprintf(error_msg, 256, "Failed to parse EOCD at offset %zu", eocd_offset);
             return rc;
         }
-        num_entries_64 = num_entries_32;
         cd_size_64 = cd_size_32;
     }
 
+    // Validate that CD extent is within archive bounds
+    if (cd_offset >= archive_size) {
+        snprintf(error_msg, 256,
+                "Central directory offset %llu is beyond archive size %llu (corrupted archive)",
+                (unsigned long long)cd_offset, (unsigned long long)archive_size);
+        return CENTRAL_DIR_PARSE_ERR_TRUNCATED;
+    }
+    if (cd_offset + cd_size_64 > archive_size) {
+        snprintf(error_msg, 256,
+                "Central directory extends beyond archive (offset %llu + size %llu > archive size %llu)",
+                (unsigned long long)cd_offset, (unsigned long long)cd_size_64,
+                (unsigned long long)archive_size);
+        return CENTRAL_DIR_PARSE_ERR_TRUNCATED;
+    }
+
+    *central_dir_offset = cd_offset;
+    *central_dir_size = cd_size_64;
+    if (num_entries) {
+        *num_entries = num_entries_64;
+    }
+    error_msg[0] = '\0';
+
+    return CENTRAL_DIR_PARSE_SUCCESS;
+}
+
+int central_dir_parse(const uint8_t *buffer, size_t buffer_size,
+                      uint64_t archive_size,
+                      uint64_t part_size,
+                      struct central_dir_parse_result *result) {
+    // Initialize result structure first
+    if (result) {
+        memset(result, 0, sizeof(*result));
+    }
+
+    // Validate inputs early
+    if (!buffer || buffer_size == 0 || !result) {
+        if (result) {
+            result->error_code = CENTRAL_DIR_PARSE_ERR_INVALID_BUFFER;
+            snprintf(result->error_message, sizeof(result->error_message),
+                    "Invalid parameters: buffer=%p size=%zu result=%p",
+                    (void*)buffer, buffer_size, (void*)result);
+        }
+        return CENTRAL_DIR_PARSE_ERR_INVALID_BUFFER;
+    }
+
+    // Parse EOCD first to get CD location
+    uint64_t cd_offset, cd_size;
+    bool is_zip64;
+    char error_msg[256];
+
+    int rc = central_dir_parse_eocd_only(buffer, buffer_size, archive_size,
+                                          &cd_offset, &cd_size, NULL, &is_zip64, error_msg);
+    if (rc != CENTRAL_DIR_PARSE_SUCCESS) {
+        result->error_code = rc;
+        result->is_zip64 = is_zip64;
+        snprintf(result->error_message, sizeof(result->error_message), "%s", error_msg);
+        return rc;
+    }
+
+    // Record is_zip64 status from EOCD
+    result->is_zip64 = is_zip64;
+
+    // Calculate pointer to CD within buffer
+    uint64_t buffer_start = archive_size - buffer_size;
+    if (cd_offset < buffer_start) {
+        result->error_code = CENTRAL_DIR_PARSE_ERR_TRUNCATED;
+        snprintf(result->error_message, sizeof(result->error_message),
+                "CD at offset %llu is before buffer start %llu",
+                (unsigned long long)cd_offset, (unsigned long long)buffer_start);
+        return CENTRAL_DIR_PARSE_ERR_TRUNCATED;
+    }
+
+    size_t cd_offset_in_buffer = (size_t)(cd_offset - buffer_start);
+    const uint8_t *cd_data = buffer + cd_offset_in_buffer;
+    size_t cd_data_size = buffer_size - cd_offset_in_buffer;
+
+    return central_dir_parse_from_cd_buffer(cd_data, cd_data_size, cd_offset, cd_size,
+                                             archive_size, part_size, is_zip64, result);
+}
+
+int central_dir_parse_from_cd_buffer(const uint8_t *cd_buffer, size_t cd_buffer_size,
+                                      uint64_t cd_offset, uint64_t cd_size,
+                                      uint64_t archive_size, uint64_t part_size,
+                                      bool is_zip64,
+                                      struct central_dir_parse_result *result) {
+    // Initialize result structure
+    if (result) {
+        memset(result, 0, sizeof(*result));
+    }
+
+    // Validate inputs
+    if (!cd_buffer || cd_buffer_size == 0 || !result) {
+        if (result) {
+            result->error_code = CENTRAL_DIR_PARSE_ERR_INVALID_BUFFER;
+            snprintf(result->error_message, sizeof(result->error_message),
+                    "Invalid parameters: cd_buffer=%p size=%zu result=%p",
+                    (void*)cd_buffer, cd_buffer_size, (void*)result);
+        }
+        return CENTRAL_DIR_PARSE_ERR_INVALID_BUFFER;
+    }
+
+    // Validate that we have enough data for the CD
+    if (cd_buffer_size < cd_size) {
+        result->error_code = CENTRAL_DIR_PARSE_ERR_TRUNCATED;
+        snprintf(result->error_message, sizeof(result->error_message),
+                "CD buffer too small: have %zu bytes, need %llu bytes",
+                cd_buffer_size, (unsigned long long)cd_size);
+        return CENTRAL_DIR_PARSE_ERR_TRUNCATED;
+    }
+
+    result->is_zip64 = is_zip64;
     result->central_dir_offset = cd_offset;
-    result->central_dir_size = cd_size_64;
+    result->central_dir_size = cd_size;
 
-    // Calculate buffer's position within the archive
-    // buffer contains the last buffer_size bytes of the archive
-    uint64_t buffer_offset = archive_size - buffer_size;
+    // For the assembled buffer case, the buffer starts at cd_offset
+    // and contains exactly the CD data. We pass buffer_offset = cd_offset
+    // so parse_central_directory calculates cd_start_in_buffer = 0.
+    //
+    // We don't have num_entries from this call path, so we pass a large value
+    // and let the parser stop when it hits cd_size or an invalid signature.
+    // This works because parse_central_directory validates entry count dynamically.
+    uint64_t estimated_entries = cd_size / 46;  // Minimum entry size is ~46 bytes
+    if (estimated_entries == 0) {
+        estimated_entries = 1;
+    }
 
-    // Parse central directory
-    rc = parse_central_directory(buffer, buffer_size, cd_offset, buffer_offset,
-                                 num_entries_64, cd_size_64, part_size,
-                                 &result->files, &result->num_files);
+    int rc = parse_central_directory(cd_buffer, cd_buffer_size,
+                                     cd_offset, cd_offset,  // buffer_offset == cd_offset
+                                     estimated_entries, cd_size, part_size,
+                                     &result->files, &result->num_files);
     if (rc != CENTRAL_DIR_PARSE_SUCCESS) {
         result->error_code = rc;
         snprintf(result->error_message, sizeof(result->error_message),
-                "Failed to parse central directory: %llu entries expected at offset %llu",
-                (unsigned long long)num_entries_64, (unsigned long long)cd_offset);
+                "Failed to parse central directory at offset %llu",
+                (unsigned long long)cd_offset);
         return rc;
     }
 

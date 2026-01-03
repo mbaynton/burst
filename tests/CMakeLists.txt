@@ -110,6 +110,7 @@ add_library(burst_downloader_lib STATIC
     ../src/downloader/stream_processor.c
     ../src/downloader/frame_parser.c
     ../src/downloader/btrfs_writer.c
+    ../src/downloader/cd_fetch.c
 )
 target_include_directories(burst_downloader_lib PUBLIC
     ../include
@@ -218,6 +219,7 @@ add_library(burst_downloader_lib_no_btrfs STATIC
     ../src/downloader/central_dir_parser.c
     ../src/downloader/stream_processor.c
     ../src/downloader/frame_parser.c
+    ../src/downloader/cd_fetch.c
 )
 target_include_directories(burst_downloader_lib_no_btrfs PUBLIC
     ../include
@@ -290,6 +292,19 @@ target_link_libraries(test_parts_calculation
 )
 add_test(NAME test_parts_calculation COMMAND test_parts_calculation)
 
+# CD fetch unit test (tests calculate_cd_fetch_ranges, assemble_cd_buffer, etc.)
+add_executable(test_cd_fetch
+    unit/test_cd_fetch.c
+    ../src/downloader/cd_fetch.c
+)
+target_include_directories(test_cd_fetch PRIVATE
+    ../include
+)
+target_link_libraries(test_cd_fetch
+    unity
+)
+add_test(NAME test_cd_fetch COMMAND test_cd_fetch)
+
 # Downloader integration tests (C-based)
 add_executable(test_central_dir_parser_integration integration/test_central_dir_parser.c)
 target_link_libraries(test_central_dir_parser_integration
@@ -359,6 +374,13 @@ add_test(NAME test_downloader_encoded_write
 set_tests_properties(test_downloader_encoded_write PROPERTIES
     LABELS "integration;s3"
     TIMEOUT 180)
+
+add_test(NAME test_large_cd
+         COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/test_large_cd.sh
+         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(test_large_cd PROPERTIES
+    LABELS "integration;s3;slow"
+    TIMEOUT 600)
 
 add_test(NAME test_writer_unix_metadata
          COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/test_writer_unix_metadata.sh
