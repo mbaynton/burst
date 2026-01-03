@@ -2,6 +2,7 @@
 #include "s3_client.h"
 #include "stream_processor.h"
 #include "central_dir_parser.h"
+#include "cd_fetch.h"
 
 #include <aws/common/byte_buf.h>
 #include <aws/common/condition_variable.h>
@@ -873,50 +874,162 @@ static int start_part_download_async(
     return 0;
 }
 
+/**
+ * Find body segment that covers a given archive offset.
+ * Returns NULL if no segment covers this offset.
+ */
+static const struct body_data_segment *find_body_segment_for_offset(
+    const struct body_data_segment *segments,
+    size_t num_segments,
+    uint64_t offset
+) {
+    for (size_t i = 0; i < num_segments; i++) {
+        uint64_t seg_start = segments[i].archive_offset;
+        uint64_t seg_end = seg_start + segments[i].size;
+        if (offset >= seg_start && offset < seg_end) {
+            return &segments[i];
+        }
+    }
+    return NULL;
+}
+
+/**
+ * Process a part that has pre-buffered body data.
+ * First feeds the buffered portion, then downloads and processes the remainder.
+ */
+static int process_part_with_body_data(
+    struct burst_downloader *downloader,
+    struct central_dir_parse_result *cd_result,
+    uint32_t part_index,
+    const struct body_data_segment *segment,
+    uint64_t central_dir_offset
+) {
+    uint64_t part_start = (uint64_t)part_index * downloader->part_size;
+    uint64_t part_end = part_start + downloader->part_size;
+
+    // Clamp to central_dir_offset (don't process CD data)
+    if (part_end > central_dir_offset) {
+        part_end = central_dir_offset;
+    }
+
+    if (part_start >= part_end) {
+        // No body data in this part
+        return 0;
+    }
+
+    // Create processor for this part
+    struct part_processor_state *processor =
+        part_processor_create(part_index, cd_result, downloader->output_dir,
+                              downloader->part_size);
+    if (!processor) {
+        fprintf(stderr, "Failed to create processor for part %u\n", part_index);
+        return -1;
+    }
+
+    int result = 0;
+
+    // Calculate which portion of the part is covered by the segment
+    uint64_t seg_start = segment->archive_offset;
+    uint64_t seg_end = seg_start + segment->size;
+
+    // Process data from segment that falls within this part
+    uint64_t overlap_start = (part_start > seg_start) ? part_start : seg_start;
+    uint64_t overlap_end = (part_end < seg_end) ? part_end : seg_end;
+
+    if (overlap_start < overlap_end) {
+        size_t offset_in_segment = (size_t)(overlap_start - seg_start);
+        size_t data_size = (size_t)(overlap_end - overlap_start);
+
+        printf("Processing part %u from buffer (bytes %llu-%llu)...\n",
+               part_index + 1,
+               (unsigned long long)overlap_start,
+               (unsigned long long)overlap_end);
+
+        int proc_rc = part_processor_process_data(
+            processor, segment->data + offset_in_segment, data_size);
+        if (proc_rc != STREAM_PROC_SUCCESS) {
+            fprintf(stderr, "Failed to process buffered data for part %u: %s\n",
+                    part_index, part_processor_get_error(processor));
+            result = -1;
+        }
+    }
+
+    // Note: We currently only handle parts that are entirely within a body segment.
+    // For parts that span segment boundaries or need S3 data after buffer data,
+    // additional logic would be needed. For the current use case (tail buffer segment),
+    // the segment covers complete parts at the end of the archive.
+
+    if (result == 0) {
+        int finalize_rc = part_processor_finalize(processor);
+        if (finalize_rc != STREAM_PROC_SUCCESS) {
+            fprintf(stderr, "Failed to finalize part %u: %s\n",
+                    part_index, part_processor_get_error(processor));
+            result = -1;
+        }
+    }
+
+    part_processor_destroy(processor);
+    return result;
+}
+
 // Extract BURST archive using concurrent part downloads
 int burst_downloader_extract_concurrent(
     struct burst_downloader *downloader,
     struct central_dir_parse_result *cd_result,
-    uint8_t *cd_buffer,
-    size_t cd_size,
-    uint64_t cd_start
+    const struct body_data_segment *body_segments,
+    size_t num_body_segments
 ) {
-    if (!downloader || !cd_result || !cd_buffer) {
+    if (!downloader || !cd_result) {
         fprintf(stderr, "Error: Invalid parameters for concurrent extraction\n");
         return -1;
     }
 
     size_t num_parts = cd_result->num_parts;
 
-    // Handle single-part archives (no concurrency needed)
+    // Note: Single-part archives should be handled by caller before this function
     if (num_parts <= 1) {
-        // Just process from CD buffer
-        if (num_parts == 1) {
-            printf("Processing single part from buffer...\n");
-            struct part_processor_state *processor =
-                part_processor_create(0, cd_result, downloader->output_dir,
-                                      downloader->part_size);
-            if (!processor) {
-                fprintf(stderr, "Failed to create processor for single part\n");
-                return -1;
+        fprintf(stderr, "Error: burst_downloader_extract_concurrent called with %zu parts. "
+                        "Single-part archives should be handled separately.\n", num_parts);
+        return -1;
+    }
+
+    // Determine which parts have body data and which need S3 download
+    // A part needs S3 download if it's not fully covered by a body segment
+    uint64_t central_dir_offset = cd_result->central_dir_offset;
+
+    // Build a bitmap of parts covered by body segments
+    bool *part_has_full_body_data = calloc(num_parts, sizeof(bool));
+    if (!part_has_full_body_data) {
+        fprintf(stderr, "Error: Failed to allocate part tracking array\n");
+        return -1;
+    }
+
+    // Check which parts are fully covered by body segments
+    for (size_t seg_idx = 0; seg_idx < num_body_segments; seg_idx++) {
+        const struct body_data_segment *seg = &body_segments[seg_idx];
+        uint64_t seg_start = seg->archive_offset;
+        uint64_t seg_end = seg_start + seg->size;
+
+        // Find all parts that are fully within this segment
+        for (size_t p = 0; p < num_parts; p++) {
+            uint64_t part_start = (uint64_t)p * downloader->part_size;
+            uint64_t part_body_end = part_start + downloader->part_size;
+
+            // Clamp to central_dir_offset
+            if (part_body_end > central_dir_offset) {
+                part_body_end = central_dir_offset;
             }
 
-            uint64_t data_end = cd_result->central_dir_offset;
-            if (data_end > 0) {
-                int proc_rc = part_processor_process_data(processor, cd_buffer, data_end);
-                if (proc_rc != STREAM_PROC_SUCCESS) {
-                    fprintf(stderr, "Failed to process single part: %s\n",
-                            part_processor_get_error(processor));
-                    part_processor_destroy(processor);
-                    return -1;
-                }
+            if (part_start >= part_body_end) {
+                // This part has no body data (entirely in CD)
+                continue;
             }
 
-            int finalize_rc = part_processor_finalize(processor);
-            part_processor_destroy(processor);
-            return finalize_rc == STREAM_PROC_SUCCESS ? 0 : -1;
+            // Check if segment fully covers this part's body data
+            if (seg_start <= part_start && seg_end >= part_body_end) {
+                part_has_full_body_data[p] = true;
+            }
         }
-        return 0;
     }
 
     // Initialize coordinator
@@ -943,38 +1056,53 @@ int burst_downloader_extract_concurrent(
         fprintf(stderr, "Error: Failed to allocate part context array\n");
         aws_mutex_clean_up(&coord.mutex);
         aws_condition_variable_clean_up(&coord.cv);
+        free(part_has_full_body_data);
         return -1;
     }
 
-    // Calculate how many parts to download vs process from CD buffer
-    bool process_final_from_buffer;
-    calculate_parts_to_download(num_parts, downloader->part_size, cd_start,
-                                &coord.parts_to_download, &process_final_from_buffer);
+    // Count parts that need S3 download
+    coord.parts_to_download = 0;
+    for (size_t p = 0; p < num_parts; p++) {
+        if (!part_has_full_body_data[p]) {
+            coord.parts_to_download++;
+        }
+    }
 
-    // Start initial batch (up to max_concurrent, but not more than coord.parts_to_download)
+    printf("Parts: %zu total, %zu from S3, %zu from buffer\n",
+           num_parts, coord.parts_to_download, num_parts - coord.parts_to_download);
+
+    // Start downloading parts that need S3 data
+    // We iterate through parts in order, skipping those with full body data
     aws_mutex_lock(&coord.mutex);
-    while (coord.parts_in_flight < coord.max_concurrent &&
-           coord.next_part_to_start < coord.parts_to_download) {
-        uint32_t part_idx = (uint32_t)coord.next_part_to_start++;
+    size_t part_idx = 0;
+    while (coord.parts_in_flight < coord.max_concurrent && part_idx < num_parts) {
+        // Skip parts with full body data
+        while (part_idx < num_parts && part_has_full_body_data[part_idx]) {
+            part_idx++;
+        }
+        if (part_idx >= num_parts) break;
+
         coord.parts_in_flight++;
+        coord.next_part_to_start = part_idx + 1;  // Track next part to consider
 
         aws_mutex_unlock(&coord.mutex);
 
-        printf("Starting part %u/%zu...\n", part_idx + 1, num_parts);
-        if (start_part_download_async(&coord, part_idx) != 0) {
+        printf("Starting part %zu/%zu from S3...\n", part_idx + 1, num_parts);
+        if (start_part_download_async(&coord, (uint32_t)part_idx) != 0) {
             aws_mutex_lock(&coord.mutex);
             coord.parts_in_flight--;
             coord.cancel_requested = true;
             coord.first_error_code = -1;
             snprintf(coord.first_error_message, sizeof(coord.first_error_message),
-                     "Failed to start part %u download", part_idx);
+                     "Failed to start part %zu download", part_idx);
             break;
         }
 
         aws_mutex_lock(&coord.mutex);
+        part_idx++;
     }
 
-    // Wait for all parts to complete
+    // Wait for S3 downloads to complete
     while (coord.parts_in_flight > 0) {
         aws_condition_variable_wait(&coord.cv, &coord.mutex);
     }
@@ -986,58 +1114,30 @@ int burst_downloader_extract_concurrent(
         fprintf(stderr, "Error during concurrent download: %s\n", coord.first_error_message);
     }
 
-    // Process final part from CD buffer (if applicable and no errors)
-    // When using larger part sizes (e.g., 16 MiB), the final part may have been
-    // downloaded from S3 instead of being processed from the CD buffer.
-    if (result == 0 && process_final_from_buffer && num_parts > 0) {
-        uint32_t final_idx = (uint32_t)(num_parts - 1);
-        uint64_t final_part_start = (uint64_t)final_idx * downloader->part_size;
-        printf("Processing final part %u/%zu from buffer...\n", final_idx + 1, num_parts);
-
-        struct part_processor_state *processor =
-            part_processor_create(final_idx, cd_result, downloader->output_dir,
-                                  downloader->part_size);
-        if (!processor) {
-            fprintf(stderr, "Failed to create processor for final part\n");
-            result = -1;
-        } else {
-            // final_part_start is guaranteed >= cd_start here (we checked via calculate_parts_to_download)
-            uint64_t data_end = cd_result->central_dir_offset;
-
-            if (data_end > final_part_start) {
-                size_t offset_in_buffer = (size_t)(final_part_start - cd_start);
-                size_t data_size = (size_t)(data_end - final_part_start);
-
-                int proc_rc = part_processor_process_data(
-                    processor, cd_buffer + offset_in_buffer, data_size);
-                if (proc_rc != STREAM_PROC_SUCCESS) {
-                    fprintf(stderr, "Failed to process final part: %s\n",
-                            part_processor_get_error(processor));
-                    result = -1;
-                }
+    // Process parts from body segments (after S3 downloads complete)
+    if (result == 0 && num_body_segments > 0) {
+        for (size_t p = 0; p < num_parts && result == 0; p++) {
+            if (!part_has_full_body_data[p]) {
+                continue;  // This part was downloaded from S3
             }
 
-            if (result == 0) {
-                int finalize_rc = part_processor_finalize(processor);
-                if (finalize_rc != STREAM_PROC_SUCCESS) {
-                    fprintf(stderr, "Failed to finalize final part: %s\n",
-                            part_processor_get_error(processor));
-                    result = -1;
-                }
-            }
+            uint64_t part_start = (uint64_t)p * downloader->part_size;
+            const struct body_data_segment *seg =
+                find_body_segment_for_offset(body_segments, num_body_segments, part_start);
 
-            part_processor_destroy(processor);
+            if (seg) {
+                result = process_part_with_body_data(
+                    downloader, cd_result, (uint32_t)p, seg, central_dir_offset);
+            }
         }
     }
 
     // Cleanup: destroy all part contexts
     for (size_t i = 0; i < num_parts; i++) {
         if (coord.part_contexts[i]) {
-            // Release meta request if still held
             if (coord.part_contexts[i]->meta_request) {
                 aws_s3_meta_request_release(coord.part_contexts[i]->meta_request);
             }
-            // Destroy processor if still held
             if (coord.part_contexts[i]->processor) {
                 part_processor_destroy(coord.part_contexts[i]->processor);
             }
@@ -1047,6 +1147,7 @@ int burst_downloader_extract_concurrent(
     aws_mem_release(downloader->allocator, coord.part_contexts);
     aws_mutex_clean_up(&coord.mutex);
     aws_condition_variable_clean_up(&coord.cv);
+    free(part_has_full_body_data);
 
     return result;
 }

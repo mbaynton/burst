@@ -186,11 +186,38 @@ struct central_dir_parse_result {
 };
 
 /**
+ * Parse only the EOCD structures to determine central directory location and size.
+ * This is a lightweight operation that doesn't parse individual CD entries.
+ * Used to detect if additional data needs to be fetched for large central directories.
+ *
+ * @param buffer              Buffer containing end of ZIP file (must include EOCD)
+ * @param buffer_size         Size of buffer in bytes
+ * @param archive_size        Total size of the archive
+ * @param central_dir_offset  Output: offset where CD starts in archive
+ * @param central_dir_size    Output: size of CD in bytes
+ * @param num_entries         Output: number of entries in CD (can be NULL if not needed)
+ * @param is_zip64            Output: whether this is a ZIP64 archive
+ * @param error_msg           Output: error message buffer (must be at least 256 bytes)
+ * @return CENTRAL_DIR_PARSE_SUCCESS on success, or error code on failure
+ */
+int central_dir_parse_eocd_only(const uint8_t *buffer, size_t buffer_size,
+                                 uint64_t archive_size,
+                                 uint64_t *central_dir_offset,
+                                 uint64_t *central_dir_size,
+                                 uint64_t *num_entries,
+                                 bool *is_zip64,
+                                 char *error_msg);
+
+/**
  * Parse the central directory from a buffer containing the end of a ZIP file.
  *
- * @param buffer       Buffer containing end of ZIP file (must include EOCD and central directory)
+ * Convenience wrapper that calls central_dir_parse_eocd_only() then
+ * central_dir_parse_from_cd_buffer(). Use this when the buffer contains
+ * both the CD and EOCD (i.e., for archives where the CD fits in the tail buffer).
+ *
+ * @param buffer       Buffer containing end of ZIP file (must include EOCD and CD)
  * @param buffer_size  Size of buffer in bytes
- * @param archive_size Total size of the archive (from S3 HEAD request), used to calculate num_parts
+ * @param archive_size Total size of the archive
  * @param part_size    Part size in bytes (must be multiple of 8 MiB)
  * @param result       Output structure to populate with parsed data
  * @return CENTRAL_DIR_PARSE_SUCCESS on success, or error code on failure
@@ -199,6 +226,29 @@ int central_dir_parse(const uint8_t *buffer, size_t buffer_size,
                       uint64_t archive_size,
                       uint64_t part_size,
                       struct central_dir_parse_result *result);
+
+/**
+ * Parse central directory from a buffer containing the CD entries.
+ *
+ * The caller must first call central_dir_parse_eocd_only() to get the
+ * cd_offset, cd_size, and is_zip64 values, then pass a buffer pointing
+ * to the start of the CD data.
+ *
+ * @param cd_buffer        Buffer containing the central directory entries
+ * @param cd_buffer_size   Size of the CD buffer in bytes
+ * @param cd_offset        Offset where CD starts in archive (from EOCD)
+ * @param cd_size          Size of CD in bytes (from EOCD)
+ * @param archive_size     Total size of the archive
+ * @param part_size        Part size in bytes (must be multiple of 8 MiB)
+ * @param is_zip64         Whether this is a ZIP64 archive
+ * @param result           Output structure to populate with parsed data
+ * @return CENTRAL_DIR_PARSE_SUCCESS on success, or error code on failure
+ */
+int central_dir_parse_from_cd_buffer(const uint8_t *cd_buffer, size_t cd_buffer_size,
+                                      uint64_t cd_offset, uint64_t cd_size,
+                                      uint64_t archive_size, uint64_t part_size,
+                                      bool is_zip64,
+                                      struct central_dir_parse_result *result);
 
 /**
  * Free resources allocated by central_dir_parse().

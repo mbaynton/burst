@@ -190,6 +190,7 @@ if(BUILD_DOWNLOADER)
         src/downloader/stream_processor.c
         src/downloader/frame_parser.c
         src/downloader/btrfs_writer.c
+        src/downloader/cd_fetch.c
     )
 
     # burst-downloader depends on all AWS CRT external projects completing
@@ -200,6 +201,9 @@ if(BUILD_DOWNLOADER)
         ${ZSTD_INCLUDE_DIR}
         ${AWS_C_S3_INCLUDE_DIRS}
     )
+
+    # Define BUILD_WITH_AWS for conditional compilation of AWS-dependent code
+    target_compile_definitions(burst-downloader PRIVATE BUILD_WITH_AWS)
 
     target_link_libraries(burst-downloader PRIVATE
         ${AWS_C_S3_LIBRARIES}

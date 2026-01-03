@@ -5,6 +5,9 @@
 #include <stddef.h>
 #include <stdbool.h>
 
+// Forward declaration for body data segments
+struct body_data_segment;
+
 struct burst_downloader {
     // AWS components
     struct aws_allocator *allocator;
@@ -89,45 +92,24 @@ int burst_downloader_fetch_cd_part(
 struct central_dir_parse_result;
 
 /**
- * Calculate how many parts need to be downloaded from S3.
- *
- * The CD buffer contains the last 8 MiB of the archive. Parts that start
- * within the CD buffer can be processed from the buffer instead of downloading.
- * With larger part sizes (e.g., 16 MiB), the final part may start before the
- * CD buffer begins, in which case it must be downloaded from S3.
- *
- * @param num_parts      Total number of parts in the archive
- * @param part_size      Size of each part in bytes
- * @param cd_start       Offset where CD buffer starts (archive_size - 8 MiB)
- * @param parts_to_download  Output: number of parts to download from S3
- * @param process_final_from_buffer  Output: whether final part comes from buffer
- */
-void calculate_parts_to_download(
-    size_t num_parts,
-    uint64_t part_size,
-    uint64_t cd_start,
-    size_t *parts_to_download,
-    bool *process_final_from_buffer
-);
-
-/**
  * Extract BURST archive using concurrent part downloads.
- * Downloads multiple 8 MiB parts concurrently using AWS SDK's async model.
+ * Downloads multiple parts concurrently using AWS SDK's async model.
  * Uses max_concurrent_parts from downloader config (default: 8).
  *
- * @param downloader  Initialized downloader
- * @param cd_result   Parsed central directory
- * @param cd_buffer   Buffer containing central directory data
- * @param cd_size     Size of cd_buffer
- * @param cd_start    Archive offset where cd_buffer starts
+ * Parts that are fully covered by body segments (pre-fetched data) are
+ * processed from the buffered data instead of downloading from S3.
+ *
+ * @param downloader       Initialized downloader
+ * @param cd_result        Parsed central directory
+ * @param body_segments    Array of pre-fetched body data segments (may be NULL)
+ * @param num_body_segments Number of body segments
  * @return 0 on success, non-zero on error
  */
 int burst_downloader_extract_concurrent(
     struct burst_downloader *downloader,
     struct central_dir_parse_result *cd_result,
-    uint8_t *cd_buffer,
-    size_t cd_size,
-    uint64_t cd_start
+    const struct body_data_segment *body_segments,
+    size_t num_body_segments
 );
 
 #endif // BURST_DOWNLOADER_H
