@@ -187,6 +187,22 @@ void test_parse_zip_data_descriptor(void) {
     TEST_ASSERT_EQUAL(16, info.frame_size);
 }
 
+void test_parse_zip_central_directory(void) {
+    uint8_t buffer[64];
+    // Central Directory header signature: 0x02014b50
+    uint32_t sig = 0x02014b50;
+    memcpy(buffer, &sig, 4);
+    // Fill rest with zeros (minimum CD header is 46 bytes but we only need 4 for detection)
+    memset(buffer + 4, 0, 60);
+
+    struct frame_info info;
+    int rc = parse_next_frame(buffer, 64, &info);
+
+    TEST_ASSERT_EQUAL(STREAM_PROC_SUCCESS, rc);
+    TEST_ASSERT_EQUAL(FRAME_ZIP_CENTRAL_DIRECTORY, info.type);
+    TEST_ASSERT_EQUAL(0, info.frame_size);  // frame_size is 0 - signals end, not consumed
+}
+
 void test_parse_zstd_frame(void) {
     uint8_t buffer[64];
     size_t uncompressed_size = 1000;
@@ -448,6 +464,7 @@ int main(void) {
     RUN_TEST(test_parse_zip_local_header);
     RUN_TEST(test_parse_zip_local_header_long_filename);
     RUN_TEST(test_parse_zip_data_descriptor);
+    RUN_TEST(test_parse_zip_central_directory);
     RUN_TEST(test_parse_zstd_frame);
     RUN_TEST(test_parse_burst_padding);
     RUN_TEST(test_parse_burst_start_of_part);

@@ -1283,6 +1283,148 @@ void test_split_at_multiple_boundaries(void) {
     free_test_cd_result(cd);
 }
 
+// =============================================================================
+// Central Directory Detection Tests
+// =============================================================================
+
+// Helper to create a Central Directory header signature
+static size_t create_central_dir_header(uint8_t *buffer) {
+    uint32_t sig = 0x02014b50;  // ZIP_CENTRAL_DIR_HEADER_SIG
+    memcpy(buffer, &sig, 4);
+    return 4;
+}
+
+void test_central_directory_at_expected_offset(void) {
+    uint8_t buffer[1024];
+    size_t offset = 0;
+
+    // Create: local header + zstd frame + data descriptor + CD header
+    offset += create_local_header(buffer + offset, "test.txt");
+    size_t zstd_size = create_test_zstd_frame(buffer + offset, sizeof(buffer) - offset, 100);
+    offset += zstd_size;
+    offset += create_data_descriptor(buffer + offset, 0, (uint32_t)zstd_size, 100);
+
+    // Record where CD starts
+    size_t cd_offset = offset;
+
+    // Add CD header signature
+    offset += create_central_dir_header(buffer + offset);
+
+    // Create cd_result with matching central_dir_offset
+    struct central_dir_parse_result *cd = create_test_cd_result("test.txt", 0, zstd_size, 100);
+    cd->central_dir_offset = cd_offset;  // Set expected CD location
+
+    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir, 8 * 1024 * 1024);
+
+    int rc = part_processor_process_data(state, buffer, offset);
+    TEST_ASSERT_EQUAL(STREAM_PROC_SUCCESS, rc);
+
+    rc = part_processor_finalize(state);
+    TEST_ASSERT_EQUAL(STREAM_PROC_SUCCESS, rc);
+
+    part_processor_destroy(state);
+    free_test_cd_result(cd);
+}
+
+void test_central_directory_before_expected_offset(void) {
+    uint8_t buffer[1024];
+    size_t offset = 0;
+
+    // Create: local header + zstd frame + data descriptor + CD header
+    offset += create_local_header(buffer + offset, "test.txt");
+    size_t zstd_size = create_test_zstd_frame(buffer + offset, sizeof(buffer) - offset, 100);
+    offset += zstd_size;
+    offset += create_data_descriptor(buffer + offset, 0, (uint32_t)zstd_size, 100);
+
+    // Record where CD starts
+    size_t cd_offset = offset;
+
+    // Add CD header signature
+    offset += create_central_dir_header(buffer + offset);
+
+    // Create cd_result with central_dir_offset set LARGER than actual
+    // (CD found earlier than expected - e.g., truncated archive)
+    struct central_dir_parse_result *cd = create_test_cd_result("test.txt", 0, zstd_size, 100);
+    cd->central_dir_offset = cd_offset + 1000;  // Expected later than actual
+
+    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir, 8 * 1024 * 1024);
+
+    // Should still succeed (warning printed to stderr but no error)
+    int rc = part_processor_process_data(state, buffer, offset);
+    TEST_ASSERT_EQUAL(STREAM_PROC_SUCCESS, rc);
+
+    rc = part_processor_finalize(state);
+    TEST_ASSERT_EQUAL(STREAM_PROC_SUCCESS, rc);
+
+    part_processor_destroy(state);
+    free_test_cd_result(cd);
+}
+
+void test_central_directory_after_expected_offset(void) {
+    uint8_t buffer[1024];
+    size_t offset = 0;
+
+    // Create: local header + zstd frame + data descriptor + CD header
+    offset += create_local_header(buffer + offset, "test.txt");
+    size_t zstd_size = create_test_zstd_frame(buffer + offset, sizeof(buffer) - offset, 100);
+    offset += zstd_size;
+    offset += create_data_descriptor(buffer + offset, 0, (uint32_t)zstd_size, 100);
+
+    // Record where CD starts
+    size_t cd_offset = offset;
+
+    // Add CD header signature
+    offset += create_central_dir_header(buffer + offset);
+
+    // Create cd_result with central_dir_offset set SMALLER than actual
+    // (CD found later than expected - e.g., extra padding before CD)
+    struct central_dir_parse_result *cd = create_test_cd_result("test.txt", 0, zstd_size, 100);
+    cd->central_dir_offset = cd_offset > 100 ? cd_offset - 100 : 0;  // Expected earlier than actual
+
+    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir, 8 * 1024 * 1024);
+
+    // Should still succeed (warning printed to stderr but no error)
+    int rc = part_processor_process_data(state, buffer, offset);
+    TEST_ASSERT_EQUAL(STREAM_PROC_SUCCESS, rc);
+
+    rc = part_processor_finalize(state);
+    TEST_ASSERT_EQUAL(STREAM_PROC_SUCCESS, rc);
+
+    part_processor_destroy(state);
+    free_test_cd_result(cd);
+}
+
+void test_central_directory_in_processing_frames_state(void) {
+    // Test CD detection when in STATE_PROCESSING_FRAMES (with open file)
+    uint8_t buffer[1024];
+    size_t offset = 0;
+
+    // Create: local header + zstd frame (no data descriptor) + CD header
+    // This tests the FRAME_ZIP_CENTRAL_DIRECTORY case in STATE_PROCESSING_FRAMES
+    offset += create_local_header(buffer + offset, "test.txt");
+    size_t zstd_size = create_test_zstd_frame(buffer + offset, sizeof(buffer) - offset, 100);
+    offset += zstd_size;
+
+    // No data descriptor - go directly to CD
+    size_t cd_offset = offset;
+    offset += create_central_dir_header(buffer + offset);
+
+    // Create cd_result - file uses no data descriptor (for this test)
+    struct central_dir_parse_result *cd = create_test_cd_result("test.txt", 0, zstd_size, 100);
+    cd->central_dir_offset = cd_offset;
+
+    struct part_processor_state *state = part_processor_create(0, cd, test_output_dir, 8 * 1024 * 1024);
+
+    int rc = part_processor_process_data(state, buffer, offset);
+    TEST_ASSERT_EQUAL(STREAM_PROC_SUCCESS, rc);
+
+    rc = part_processor_finalize(state);
+    TEST_ASSERT_EQUAL(STREAM_PROC_SUCCESS, rc);
+
+    part_processor_destroy(state);
+    free_test_cd_result(cd);
+}
+
 int main(void) {
     UNITY_BEGIN();
 
@@ -1329,6 +1471,12 @@ int main(void) {
     RUN_TEST(test_split_mid_burst_skippable_payload);
     RUN_TEST(test_split_mid_local_header_variable_fields);
     RUN_TEST(test_split_at_multiple_boundaries);
+
+    // Central Directory detection tests
+    RUN_TEST(test_central_directory_at_expected_offset);
+    RUN_TEST(test_central_directory_before_expected_offset);
+    RUN_TEST(test_central_directory_after_expected_offset);
+    RUN_TEST(test_central_directory_in_processing_frames_state);
 
     return UNITY_END();
 }

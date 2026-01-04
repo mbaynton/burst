@@ -149,6 +149,7 @@ struct frame_info {
         FRAME_BURST_START_OF_PART,
         FRAME_ZIP_LOCAL_HEADER,
         FRAME_ZIP_DATA_DESCRIPTOR,
+        FRAME_ZIP_CENTRAL_DIRECTORY,
         FRAME_UNKNOWN
     } type;
 

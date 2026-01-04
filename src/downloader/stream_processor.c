@@ -236,7 +236,11 @@ int part_processor_process_data(
             }
             if (rc != STREAM_PROC_SUCCESS) {
                 snprintf(state->error_message, sizeof(state->error_message),
-                         "Failed to parse frame at offset %zu", offset);
+                         "Failed to parse frame at offset %zu (part %u, part_start=%llu, bytes_processed=%llu, archive_offset=%llu)",
+                         offset, state->part_index,
+                         (unsigned long long)state->part_start_offset,
+                         (unsigned long long)state->bytes_processed,
+                         (unsigned long long)(state->part_start_offset + state->bytes_processed + offset));
                 state->state = STATE_ERROR;
                 state->error_code = rc;
                 return rc;
@@ -247,6 +251,19 @@ int part_processor_process_data(
                 offset += info.frame_size;
                 state->bytes_processed += info.frame_size;
                 continue;
+            }
+
+            // Central Directory reached - stop processing this part
+            if (info.type == FRAME_ZIP_CENTRAL_DIRECTORY) {
+                // Validate CD location matches expected offset
+                uint64_t actual_cd_offset = state->part_start_offset + state->bytes_processed + offset;
+                if (actual_cd_offset != state->cd_result->central_dir_offset) {
+                    fprintf(stderr, "Warning: Central Directory found at offset %llu, expected %llu\n",
+                            (unsigned long long)actual_cd_offset,
+                            (unsigned long long)state->cd_result->central_dir_offset);
+                }
+                state->state = STATE_DONE;
+                break;
             }
 
             // Should be local header
@@ -296,7 +313,11 @@ int part_processor_process_data(
             }
             if (rc != STREAM_PROC_SUCCESS) {
                 snprintf(state->error_message, sizeof(state->error_message),
-                         "Failed to parse frame at offset %zu", offset);
+                         "Failed to parse frame at offset %zu (part %u, part_start=%llu, bytes_processed=%llu, archive_offset=%llu)",
+                         offset, state->part_index,
+                         (unsigned long long)state->part_start_offset,
+                         (unsigned long long)state->bytes_processed,
+                         (unsigned long long)(state->part_start_offset + state->bytes_processed + offset));
                 state->state = STATE_ERROR;
                 state->error_code = rc;
                 return rc;
@@ -379,6 +400,23 @@ int part_processor_process_data(
                 state->state = STATE_EXPECT_LOCAL_HEADER;
                 // Don't advance offset - re-parse in new state
                 break;
+
+            case FRAME_ZIP_CENTRAL_DIRECTORY: {
+                // Central Directory reached - stop processing this part
+                // Validate CD location matches expected offset
+                uint64_t actual_cd_offset = state->part_start_offset + state->bytes_processed + offset;
+                if (actual_cd_offset != state->cd_result->central_dir_offset) {
+                    fprintf(stderr, "Warning: Central Directory found at offset %llu, expected %llu\n",
+                            (unsigned long long)actual_cd_offset,
+                            (unsigned long long)state->cd_result->central_dir_offset);
+                }
+                rc = close_output_file(state);
+                if (rc != STREAM_PROC_SUCCESS) {
+                    return rc;
+                }
+                state->state = STATE_DONE;
+                break;
+            }
 
             default:
                 snprintf(state->error_message, sizeof(state->error_message),

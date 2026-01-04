@@ -39,6 +39,13 @@ int parse_next_frame(const uint8_t *buffer, size_t buffer_len, struct frame_info
         return STREAM_PROC_SUCCESS;
     }
 
+    if (magic == ZIP_CENTRAL_DIR_HEADER_SIG) {
+        // Central Directory reached - signals end of file data in this part
+        info->type = FRAME_ZIP_CENTRAL_DIRECTORY;
+        info->frame_size = 0;  // Not consumed - just signals end
+        return STREAM_PROC_SUCCESS;
+    }
+
     if (magic == ZSTD_MAGIC_NUMBER) {
         info->type = FRAME_ZSTD_COMPRESSED;
 
