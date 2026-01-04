@@ -618,7 +618,11 @@ static int handle_zstd_frame(struct part_processor_state *state,
 
     if (rc != BTRFS_WRITER_SUCCESS) {
         snprintf(state->error_message, sizeof(state->error_message),
-                 "BTRFS write failed: %d", rc);
+                 "BTRFS write failed (rc=%d) for file '%s' at uncompressed_offset=%lu, "
+                 "part=%u, part_bytes_processed=%lu",
+                 rc, state->current_file->filename,
+                 (unsigned long)state->current_file->uncompressed_offset,
+                 state->part_index, (unsigned long)state->bytes_processed);
         state->state = STATE_ERROR;
         state->error_code = STREAM_PROC_ERR_BTRFS_WRITE;
         return STREAM_PROC_ERR_BTRFS_WRITE;

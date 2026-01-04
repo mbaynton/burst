@@ -63,8 +63,8 @@ int do_write_encoded(
         return BTRFS_WRITER_ERR_INVALID_ARGS;
     }
 
-    // BTRFS requires compressed size <= uncompressed size for encoded writes
-    if (frame_len > uncompressed_len) {
+    // BTRFS requires compressed size < uncompressed size for encoded writes
+    if (frame_len >= uncompressed_len) {
         // Fallback to unencoded write
         return do_write_unencoded(fd, zstd_frame, frame_len, uncompressed_len, file_offset);
     }
@@ -100,8 +100,15 @@ int do_write_encoded(
             // Fall back to unencoded write
             return do_write_unencoded(fd, zstd_frame, frame_len, uncompressed_len, file_offset);
         }
-        fprintf(stderr, "btrfs_writer: BTRFS_IOC_ENCODED_WRITE failed: %s\n",
-                strerror(saved_errno));
+        fprintf(stderr, "btrfs_writer: BTRFS_IOC_ENCODED_WRITE failed: %s\n"
+                "  fd=%d, file_offset=%lu, frame_len=%zu, uncompressed_len=%lu\n"
+                "  enc.offset=%ld, enc.len=%lu, enc.unencoded_len=%lu, enc.unencoded_offset=%lu\n"
+                "  enc.compression=%u, enc.encryption=%u, enc.flags=%lu\n",
+                strerror(saved_errno),
+                fd, (unsigned long)file_offset, frame_len, (unsigned long)uncompressed_len,
+                (long)enc.offset, (unsigned long)enc.len, (unsigned long)enc.unencoded_len,
+                (unsigned long)enc.unencoded_offset,
+                enc.compression, enc.encryption, (unsigned long)enc.flags);
         return BTRFS_WRITER_ERR_IOCTL_FAILED;
     }
 
