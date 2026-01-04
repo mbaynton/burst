@@ -39,7 +39,7 @@ struct burst_downloader *burst_downloader_create(
     const char *region,
     const char *output_dir,
     size_t max_connections,
-    size_t max_concurrent_parts,  // Max concurrent part downloads (1-16, default: 8)
+    size_t max_concurrent_parts,  // Max concurrent part downloads (1-128, default: 8)
     uint64_t part_size,  // Part size in bytes (8-64 MiB, must be multiple of 8 MiB)
     const char *profile_name  // Can be NULL
 );

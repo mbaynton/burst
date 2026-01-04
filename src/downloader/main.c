@@ -23,7 +23,7 @@ static void print_usage(const char *program_name) {
     printf("\nOptional:\n");
     printf("  -c, --connections NUM     Max concurrent connections (0=auto, max: 256)\n");
     printf("  -n, --max-concurrent-parts NUM\n");
-    printf("                            Max concurrent part downloads (1-16, default: 8)\n");
+    printf("                            Max concurrent part downloads (1-128, default: 8)\n");
     printf("  -s, --part-size NUM       Part size in MiB (8-64, must be multiple of 8,\n");
     printf("                            default: 8)\n");
     printf("  -p, --profile PROFILE     AWS profile name (default: AWS_PROFILE env or 'default')\n");
@@ -416,8 +416,8 @@ int main(int argc, char **argv) {
                 break;
             case 'n':
                 max_concurrent_parts = atoi(optarg);
-                if (max_concurrent_parts < 1 || max_concurrent_parts > 16) {
-                    fprintf(stderr, "Error: Max concurrent parts must be between 1 and 16\n");
+                if (max_concurrent_parts < 1 || max_concurrent_parts > 128) {
+                    fprintf(stderr, "Error: Max concurrent parts must be between 1 and 128\n");
                     return 1;
                 }
                 break;
