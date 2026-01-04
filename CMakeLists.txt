@@ -14,6 +14,13 @@ if(BURST_DEBUG)
     message(STATUS "Debug mode enabled (frame content size verification active)")
 endif()
 
+# Profiling option
+option(BURST_PROFILE "Enable profiling and statistics gathering for downloader" OFF)
+if(BURST_PROFILE)
+    add_compile_definitions(BURST_PROFILE)
+    message(STATUS "Profiling enabled for downloader")
+endif()
+
 # Compiler warnings
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     add_compile_options(-Wall -Wextra -Wpedantic)
@@ -220,6 +227,7 @@ if(BUILD_DOWNLOADER)
         src/downloader/frame_parser.c
         src/downloader/btrfs_writer.c
         src/downloader/cd_fetch.c
+        src/downloader/profiling.c
     )
 
     # burst-downloader depends on all AWS CRT external projects completing

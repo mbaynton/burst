@@ -1,4 +1,5 @@
 #include "btrfs_writer.h"
+#include "profiling.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -92,7 +93,18 @@ int do_write_encoded(
     enc.compression = BTRFS_ENCODED_IO_COMPRESSION_ZSTD;
     enc.encryption = 0;
 
+#ifdef BURST_PROFILE
+    uint64_t start_time = burst_profile_get_time_ns();
+#endif
+
     int ret = ioctl(fd, BTRFS_IOC_ENCODED_WRITE, &enc);
+
+#ifdef BURST_PROFILE
+    int saved_errno_profile = errno;
+    uint64_t elapsed = burst_profile_get_time_ns() - start_time;
+    errno = saved_errno_profile;
+#endif
+
     if (ret < 0) {
         int saved_errno = errno;
         if (saved_errno == ENOTTY || saved_errno == EOPNOTSUPP) {
@@ -111,6 +123,12 @@ int do_write_encoded(
                 enc.compression, enc.encryption, (unsigned long)enc.flags);
         return BTRFS_WRITER_ERR_IOCTL_FAILED;
     }
+
+#ifdef BURST_PROFILE
+    PROFILE_ADD(g_profile_stats.write_encoded_time_ns, elapsed);
+    PROFILE_COUNT(g_profile_stats.write_encoded_count);
+    PROFILE_ADD(g_profile_stats.write_encoded_bytes, uncompressed_len);
+#endif
 
     return BTRFS_WRITER_SUCCESS;
 }
@@ -170,7 +188,18 @@ int do_write_unencoded(
     }
 
     // Write uncompressed data using pwrite for atomic positioning
+#ifdef BURST_PROFILE
+    uint64_t start_time = burst_profile_get_time_ns();
+#endif
+
     ssize_t written = pwrite(fd, decompress_buffer, actual_size, (off_t)file_offset);
+
+#ifdef BURST_PROFILE
+    int saved_errno_profile = errno;
+    uint64_t elapsed = burst_profile_get_time_ns() - start_time;
+    errno = saved_errno_profile;
+#endif
+
     if (written < 0) {
         fprintf(stderr, "btrfs_writer: pwrite failed: %s\n", strerror(errno));
         return BTRFS_WRITER_ERR_WRITE_FAILED;
@@ -181,6 +210,12 @@ int do_write_unencoded(
                 written, actual_size);
         return BTRFS_WRITER_ERR_WRITE_FAILED;
     }
+
+#ifdef BURST_PROFILE
+    PROFILE_ADD(g_profile_stats.write_unencoded_time_ns, elapsed);
+    PROFILE_COUNT(g_profile_stats.write_unencoded_count);
+    PROFILE_ADD(g_profile_stats.write_unencoded_bytes, actual_size);
+#endif
 
     return BTRFS_WRITER_SUCCESS;
 }

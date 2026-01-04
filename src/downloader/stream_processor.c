@@ -3,6 +3,7 @@
 #include "btrfs_writer.h"
 #include "central_dir_parser.h"
 #include "zip_structures.h"
+#include "profiling.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -723,7 +724,16 @@ static int open_output_file(struct part_processor_state *state,
         state->current_file->fd = -1;  // No file descriptor for directories
 
         // Create the directory itself (parent dirs already ensured above)
+#ifdef BURST_PROFILE
+        int mkdir_result;
+        PROFILE_TIME_BLOCK(g_profile_stats.inode_time_ns, {
+            mkdir_result = mkdir(state->current_file->filename, 0755);
+        });
+        PROFILE_COUNT(g_profile_stats.inode_count);
+        if (mkdir_result != 0 && errno != EEXIST) {
+#else
         if (mkdir(state->current_file->filename, 0755) != 0 && errno != EEXIST) {
+#endif
             snprintf(state->error_message, sizeof(state->error_message),
                      "Failed to create directory %s: %s", state->current_file->filename, strerror(errno));
             free(state->current_file->filename);
@@ -737,18 +747,32 @@ static int open_output_file(struct part_processor_state *state,
         // Apply Unix permissions if available
         if (state->current_file->has_unix_mode) {
             mode_t mode = state->current_file->unix_mode & 07777;
+#ifdef BURST_PROFILE
+            PROFILE_TIME_BLOCK(g_profile_stats.inode_time_ns, {
+                (void)chmod(state->current_file->filename, mode);
+            });
+            PROFILE_COUNT(g_profile_stats.inode_count);
+#else
             if (chmod(state->current_file->filename, mode) != 0) {
                 fprintf(stderr, "Warning: failed to set permissions on directory %s: %s\n",
                         state->current_file->filename, strerror(errno));
             }
+#endif
         }
 
         // Apply Unix ownership if available and running as root
         if (state->current_file->has_unix_extra && geteuid() == 0) {
+#ifdef BURST_PROFILE
+            PROFILE_TIME_BLOCK(g_profile_stats.inode_time_ns, {
+                (void)chown(state->current_file->filename, state->current_file->uid, state->current_file->gid);
+            });
+            PROFILE_COUNT(g_profile_stats.inode_count);
+#else
             if (chown(state->current_file->filename, state->current_file->uid, state->current_file->gid) != 0) {
                 fprintf(stderr, "Warning: failed to set ownership on directory %s: %s\n",
                         state->current_file->filename, strerror(errno));
             }
+#endif
         }
 
         return STREAM_PROC_SUCCESS;
@@ -776,8 +800,16 @@ static int open_output_file(struct part_processor_state *state,
     // Regular file: open for writing
     // Never use O_TRUNC - with concurrent part processing, parts may complete
     // out of order, so we must not truncate data written by other parts
+#ifdef BURST_PROFILE
+    PROFILE_TIME_BLOCK(g_profile_stats.inode_time_ns, {
+        state->current_file->fd = open(state->current_file->filename,
+                                       O_WRONLY | O_CREAT, 0644);
+    });
+    PROFILE_COUNT(g_profile_stats.inode_count);
+#else
     state->current_file->fd = open(state->current_file->filename,
                                    O_WRONLY | O_CREAT, 0644);
+#endif
     if (state->current_file->fd < 0) {
         snprintf(state->error_message, sizeof(state->error_message),
                  "Failed to open %s: %s", state->current_file->filename, strerror(errno));
@@ -807,7 +839,16 @@ static int close_output_file(struct part_processor_state *state)
         unlink(state->current_file->filename);
 
         // Create symlink
+#ifdef BURST_PROFILE
+        int symlink_result;
+        PROFILE_TIME_BLOCK(g_profile_stats.inode_time_ns, {
+            symlink_result = symlink((char *)state->current_file->symlink_buffer, state->current_file->filename);
+        });
+        PROFILE_COUNT(g_profile_stats.inode_count);
+        if (symlink_result != 0) {
+#else
         if (symlink((char *)state->current_file->symlink_buffer, state->current_file->filename) != 0) {
+#endif
             // Log but don't fail (symlink may already exist from another part)
             fprintf(stderr, "Warning: failed to create symlink %s -> %s: %s\n",
                     state->current_file->filename,
@@ -818,10 +859,17 @@ static int close_output_file(struct part_processor_state *state)
         // Apply ownership to symlink if running as root (using lchown, not fchown)
         if (state->current_file->has_unix_extra) {
             if (geteuid() == 0) {
+#ifdef BURST_PROFILE
+                PROFILE_TIME_BLOCK(g_profile_stats.inode_time_ns, {
+                    (void)lchown(state->current_file->filename, state->current_file->uid, state->current_file->gid);
+                });
+                PROFILE_COUNT(g_profile_stats.inode_count);
+#else
                 if (lchown(state->current_file->filename, state->current_file->uid, state->current_file->gid) != 0) {
                     fprintf(stderr, "Warning: failed to set ownership on symlink %s: %s\n",
                             state->current_file->filename, strerror(errno));
                 }
+#endif
             }
         }
 
@@ -837,6 +885,11 @@ static int close_output_file(struct part_processor_state *state)
     }
 
     if (state->current_file->fd >= 0) {
+#ifdef BURST_PROFILE
+        // Time the entire file finalization block as a single measurement
+        uint64_t finalize_start = burst_profile_get_time_ns();
+#endif
+
         // Truncate file to expected final size (from central directory).
         // This handles pre-existing files that may be larger than expected,
         // and is safe with concurrent parts since all parts truncate to the
@@ -872,6 +925,12 @@ static int close_output_file(struct part_processor_state *state)
 
         close(state->current_file->fd);
         state->current_file->fd = -1;
+
+#ifdef BURST_PROFILE
+        uint64_t finalize_elapsed = burst_profile_get_time_ns() - finalize_start;
+        PROFILE_ADD(g_profile_stats.inode_time_ns, finalize_elapsed);
+        PROFILE_COUNT(g_profile_stats.inode_count);  // Count as one "finalize" operation
+#endif
     }
 
     // Free any allocated symlink buffer (in case of error cleanup)
@@ -908,7 +967,16 @@ static int ensure_directory_exists(const char *path)
         }
 
         // Try to create directory
+#ifdef BURST_PROFILE
+        int mkdir_result;
+        PROFILE_TIME_BLOCK(g_profile_stats.inode_time_ns, {
+            mkdir_result = mkdir(dir, 0755);
+        });
+        PROFILE_COUNT(g_profile_stats.inode_count);
+        if (mkdir_result != 0 && errno != EEXIST) {
+#else
         if (mkdir(dir, 0755) != 0 && errno != EEXIST) {
+#endif
             // Check if it exists as a directory
             struct stat st;
             if (stat(dir, &st) != 0 || !S_ISDIR(st.st_mode)) {

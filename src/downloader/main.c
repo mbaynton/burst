@@ -3,6 +3,7 @@
 #include "central_dir_parser.h"
 #include "stream_processor.h"
 #include "cd_fetch.h"
+#include "profiling.h"
 
 #include <aws/common/allocator.h>
 
@@ -315,6 +316,19 @@ int burst_downloader_extract(struct burst_downloader *downloader) {
         printf("\nExtraction complete! %zu files extracted.\n", cd_result.num_files);
     }
 
+#ifdef BURST_PROFILE
+    burst_profile_finalize();
+    printf("\n");
+    burst_profile_print_stats();
+
+    // Write JSON to output directory
+    char json_path[1024];
+    snprintf(json_path, sizeof(json_path), "%s/burst_profile.json", downloader->output_dir);
+    if (burst_profile_write_json(json_path) == 0) {
+        printf("\nProfile data written to: %s\n", json_path);
+    }
+#endif
+
 cleanup:
     central_dir_parse_result_free(&cd_result);
 
@@ -351,6 +365,10 @@ cleanup:
 }
 
 int main(int argc, char **argv) {
+#ifdef BURST_PROFILE
+    burst_profile_init();
+#endif
+
     const char *bucket = NULL;
     const char *key = NULL;
     const char *region = NULL;

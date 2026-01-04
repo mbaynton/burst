@@ -3,6 +3,7 @@
 #include "stream_processor.h"
 #include "central_dir_parser.h"
 #include "cd_fetch.h"
+#include "profiling.h"
 
 #include <aws/common/byte_buf.h>
 #include <aws/common/condition_variable.h>
@@ -564,6 +565,13 @@ struct stream_part_context {
     // Coordinator reference
     struct download_coordinator *coordinator;
     uint32_t part_index;
+
+#ifdef BURST_PROFILE
+    // Profiling: track time spent in request vs callbacks
+    uint64_t request_start_ns;      // When request was initiated
+    uint64_t callback_time_ns;      // Cumulative time spent in callbacks (processing)
+    uint64_t bytes_received;        // Bytes received from S3
+#endif
 };
 
 // Coordinator for concurrent part downloads
@@ -639,8 +647,18 @@ static int s3_stream_body_callback(
 
     struct stream_part_context *ctx = user_data;
 
+#ifdef BURST_PROFILE
+    uint64_t cb_start = burst_profile_get_time_ns();
+    ctx->bytes_received += body->len;
+#endif
+
     // Feed chunk directly to stream processor
     int rc = part_processor_process_data(ctx->processor, body->ptr, body->len);
+
+#ifdef BURST_PROFILE
+    ctx->callback_time_ns += burst_profile_get_time_ns() - cb_start;
+#endif
+
     if (rc != STREAM_PROC_SUCCESS) {
         ctx->error_code = rc;
         snprintf(ctx->error_message, sizeof(ctx->error_message),
@@ -690,6 +708,10 @@ static void s3_stream_finish_callback(
     struct stream_part_context *ctx = user_data;
     struct download_coordinator *coord = ctx->coordinator;
 
+#ifdef BURST_PROFILE
+    uint64_t finish_cb_start = burst_profile_get_time_ns();
+#endif
+
     // Record error in context
     if (result->error_code != AWS_ERROR_SUCCESS && ctx->error_code == 0) {
         ctx->error_code = result->error_code;
@@ -707,6 +729,19 @@ static void s3_stream_finish_callback(
                     ctx->part_index, part_processor_get_error(ctx->processor));
         }
     }
+
+#ifdef BURST_PROFILE
+    // Add finish callback processing time to callback time
+    ctx->callback_time_ns += burst_profile_get_time_ns() - finish_cb_start;
+
+    // Calculate and record S3 network time = total request time - callback processing time
+    uint64_t total_request_time = burst_profile_get_time_ns() - ctx->request_start_ns;
+    uint64_t network_time = (total_request_time > ctx->callback_time_ns) ?
+                            (total_request_time - ctx->callback_time_ns) : 0;
+    PROFILE_ADD(g_profile_stats.s3_time_ns, network_time);
+    PROFILE_COUNT(g_profile_stats.s3_requests);
+    PROFILE_ADD(g_profile_stats.s3_bytes, ctx->bytes_received);
+#endif
 
     // If using coordinator (async mode), coordinate with other parts
     if (coord) {
@@ -856,6 +891,13 @@ static int start_part_download_async(
         .body_callback = s3_stream_body_callback,
         .finish_callback = s3_stream_finish_callback,
     };
+
+#ifdef BURST_PROFILE
+    // Record request start time for S3 timing calculation
+    ctx->request_start_ns = burst_profile_get_time_ns();
+    ctx->callback_time_ns = 0;
+    ctx->bytes_received = 0;
+#endif
 
     // Make the request (returns immediately)
     ctx->meta_request = aws_s3_client_make_meta_request(downloader->s3_client, &request_options);
