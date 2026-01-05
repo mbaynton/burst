@@ -590,6 +590,7 @@ int central_dir_parse_eocd_only(const uint8_t *buffer, size_t buffer_size,
                                  uint64_t *central_dir_size,
                                  uint64_t *num_entries,
                                  bool *is_zip64,
+                                 uint32_t *first_cdfh_offset_in_tail,
                                  char *error_msg) {
     // Validate inputs
     if (!buffer || buffer_size == 0 || !central_dir_offset || !central_dir_size ||
@@ -598,6 +599,11 @@ int central_dir_parse_eocd_only(const uint8_t *buffer, size_t buffer_size,
             snprintf(error_msg, 256, "Invalid parameters");
         }
         return CENTRAL_DIR_PARSE_ERR_INVALID_BUFFER;
+    }
+
+    // Initialize optional output
+    if (first_cdfh_offset_in_tail) {
+        *first_cdfh_offset_in_tail = 0;  // Default: no BURST comment found
     }
 
     // Find EOCD
@@ -683,6 +689,40 @@ int central_dir_parse_eocd_only(const uint8_t *buffer, size_t buffer_size,
     if (num_entries) {
         *num_entries = num_entries_64;
     }
+
+    // Parse BURST EOCD comment if present and requested
+    if (first_cdfh_offset_in_tail) {
+        // EOCD is at eocd_offset, comment follows the 22-byte fixed structure
+        const struct zip_end_central_dir *eocd =
+            (const struct zip_end_central_dir *)(buffer + eocd_offset);
+
+        // Check if comment is >= 8 bytes (minimum BURST comment size)
+        if (eocd->comment_length >= BURST_EOCD_COMMENT_SIZE) {
+            const uint8_t *comment = buffer + eocd_offset + sizeof(struct zip_end_central_dir);
+
+            // Verify we have enough buffer for the comment
+            if (eocd_offset + sizeof(struct zip_end_central_dir) + BURST_EOCD_COMMENT_SIZE <= buffer_size) {
+                // Check magic bytes (bytes 0-3)
+                uint32_t magic;
+                memcpy(&magic, comment, sizeof(uint32_t));
+
+                if (magic == BURST_EOCD_COMMENT_MAGIC) {
+                    // Check version (byte 4)
+                    uint8_t version = comment[4];
+                    if (version == BURST_EOCD_COMMENT_VERSION) {
+                        // Extract uint24 offset (bytes 5-7, little-endian)
+                        uint32_t offset = (uint32_t)comment[5] |
+                                          ((uint32_t)comment[6] << 8) |
+                                          ((uint32_t)comment[7] << 16);
+                        *first_cdfh_offset_in_tail = offset;
+                    }
+                    // Unknown version: leave at default 0 (caller will use sequential path)
+                }
+                // Non-BURST comment: leave at default 0
+            }
+        }
+    }
+
     error_msg[0] = '\0';
 
     return CENTRAL_DIR_PARSE_SUCCESS;
@@ -714,7 +754,8 @@ int central_dir_parse(const uint8_t *buffer, size_t buffer_size,
     char error_msg[256];
 
     int rc = central_dir_parse_eocd_only(buffer, buffer_size, archive_size,
-                                          &cd_offset, &cd_size, NULL, &is_zip64, error_msg);
+                                          &cd_offset, &cd_size, NULL, &is_zip64,
+                                          NULL, error_msg);
     if (rc != CENTRAL_DIR_PARSE_SUCCESS) {
         result->error_code = rc;
         result->is_zip64 = is_zip64;
@@ -818,6 +859,88 @@ int central_dir_parse_from_cd_buffer(const uint8_t *cd_buffer, size_t cd_buffer_
                 "Failed to build part mapping");
         return rc;
     }
+
+    result->error_code = CENTRAL_DIR_PARSE_SUCCESS;
+    return CENTRAL_DIR_PARSE_SUCCESS;
+}
+
+int central_dir_parse_partial(const uint8_t *buffer, size_t buffer_size,
+                               uint64_t buffer_start_offset,
+                               uint64_t central_dir_offset,
+                               uint32_t first_cdfh_offset,
+                               uint64_t archive_size,
+                               uint64_t part_size,
+                               bool is_zip64,
+                               struct central_dir_parse_result *result) {
+    // Initialize result structure
+    if (result) {
+        memset(result, 0, sizeof(*result));
+    }
+
+    // Validate inputs
+    if (!buffer || buffer_size == 0 || !result) {
+        if (result) {
+            result->error_code = CENTRAL_DIR_PARSE_ERR_INVALID_BUFFER;
+            snprintf(result->error_message, sizeof(result->error_message),
+                     "Invalid buffer or result parameter");
+        }
+        return CENTRAL_DIR_PARSE_ERR_INVALID_BUFFER;
+    }
+
+    // Validate part_size alignment
+    if (part_size < BURST_BASE_PART_SIZE ||
+        (part_size % BURST_BASE_PART_SIZE) != 0) {
+        result->error_code = CENTRAL_DIR_PARSE_ERR_INVALID_BUFFER;
+        snprintf(result->error_message, sizeof(result->error_message),
+                 "Part size %llu must be a multiple of 8 MiB",
+                 (unsigned long long)part_size);
+        return CENTRAL_DIR_PARSE_ERR_INVALID_BUFFER;
+    }
+
+    // Calculate the absolute archive offset of the first complete CDFH
+    // first_cdfh_offset is relative to TAIL START (buffer_start_offset), NOT CD start
+    uint64_t first_cdfh_archive_offset = buffer_start_offset + first_cdfh_offset;
+
+    // The offset in buffer is simply the first_cdfh_offset since buffer starts at buffer_start_offset
+    size_t cdfh_offset_in_buffer = (size_t)first_cdfh_offset;
+    if (cdfh_offset_in_buffer >= buffer_size) {
+        result->error_code = CENTRAL_DIR_PARSE_ERR_TRUNCATED;
+        snprintf(result->error_message, sizeof(result->error_message),
+                 "First CDFH offset %zu is beyond buffer size %zu",
+                 cdfh_offset_in_buffer, buffer_size);
+        return CENTRAL_DIR_PARSE_ERR_TRUNCATED;
+    }
+
+    // Calculate how much CD data we have available
+    const uint8_t *cd_start = buffer + cdfh_offset_in_buffer;
+    size_t cd_available = buffer_size - cdfh_offset_in_buffer;
+
+    // Use a large estimate for num_entries since we don't know exact count
+    // The parse function will stop when it runs out of data
+    uint64_t estimated_entries = cd_available / 46;  // Min CDFH size
+    if (estimated_entries > 10000000) {
+        estimated_entries = 10000000;  // Sanity cap
+    }
+
+    // Parse whatever CDFH entries we can from the available data
+    // We pass cd_size = cd_available to let the parser use all available bytes
+    int rc = central_dir_parse_from_cd_buffer(
+        cd_start, cd_available,
+        first_cdfh_archive_offset,  // Treat first CDFH as CD start for offset calculations
+        cd_available,               // Use available size as CD size
+        archive_size,
+        part_size,
+        is_zip64,
+        result
+    );
+
+    if (rc != CENTRAL_DIR_PARSE_SUCCESS) {
+        return rc;
+    }
+
+    // Update the central_dir_offset to reflect the actual CD start (not where we started parsing)
+    result->central_dir_offset = central_dir_offset;
+    // Note: central_dir_size remains as returned by parse (only the portion we parsed)
 
     result->error_code = CENTRAL_DIR_PARSE_SUCCESS;
     return CENTRAL_DIR_PARSE_SUCCESS;

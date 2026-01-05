@@ -655,6 +655,82 @@ int burst_writer_add_directory(struct burst_writer *writer,
     return 0;
 }
 
+/**
+ * Calculate the size of a central directory file header for a given entry.
+ * Includes fixed header, filename, and extra fields (Unix + optional ZIP64).
+ */
+static size_t calculate_cdfh_size(const struct file_entry *entry) {
+    size_t size = sizeof(struct zip_central_header);
+    size += strlen(entry->filename);
+
+    // Unix extra field is always 15 bytes
+    size += 15;
+
+    // ZIP64 extra field if needed (each field present adds 8 bytes)
+    bool need_zip64 = (entry->compressed_size > 0xFFFFFFFF) ||
+                      (entry->uncompressed_size > 0xFFFFFFFF) ||
+                      (entry->local_header_offset > 0xFFFFFFFF);
+    if (need_zip64) {
+        // 4 bytes header + 8 bytes per field that overflows
+        size += 4;  // Header ID (2) + TSize (2)
+        if (entry->uncompressed_size > 0xFFFFFFFF) size += 8;
+        if (entry->compressed_size > 0xFFFFFFFF) size += 8;
+        if (entry->local_header_offset > 0xFFFFFFFF) size += 8;
+    }
+
+    return size;
+}
+
+/**
+ * Find the offset from TAIL START to the first complete CDFH that falls within
+ * the last 8 MiB of the archive.
+ *
+ * Returns:
+ *   0 if entire CD fits within 8 MiB (no partial CD optimization needed)
+ *   0xFFFFFF if no complete CDFH exists in the last 8 MiB
+ *   Otherwise, the offset from TAIL START to the first such CDFH
+ *
+ * Note: The returned offset is relative to (archive_size - 8 MiB), NOT relative
+ * to the CD start. This ensures the value always fits in 24 bits since the
+ * offset is always < 8 MiB.
+ */
+static uint32_t find_first_cdfh_in_tail(const struct burst_writer *writer,
+                                         uint64_t central_dir_start,
+                                         uint64_t final_archive_size) {
+    const uint64_t tail_size = BURST_PART_SIZE;  // 8 MiB
+
+    // If the entire archive fits in the tail buffer, no optimization needed
+    if (final_archive_size <= tail_size) {
+        return 0;
+    }
+
+    uint64_t tail_start = final_archive_size - tail_size;
+
+    // If the entire CD fits in the tail buffer, no partial CD scenario
+    if (central_dir_start >= tail_start) {
+        return 0;
+    }
+
+    // Walk through entries to find the first CDFH that starts at or after tail_start
+    uint64_t cdfh_offset = central_dir_start;
+    for (size_t i = 0; i < writer->num_files; i++) {
+        size_t entry_size = calculate_cdfh_size(&writer->files[i]);
+
+        // Check if this CDFH starts within the tail
+        if (cdfh_offset >= tail_start) {
+            // Found it! Return offset relative to TAIL START (not CD start)
+            uint64_t offset_from_tail_start = cdfh_offset - tail_start;
+            // This offset is always < 8 MiB, so it always fits in 24 bits
+            return (uint32_t)offset_from_tail_start;
+        }
+
+        cdfh_offset += entry_size;
+    }
+
+    // No complete CDFH in tail (shouldn't happen if CD extends past tail)
+    return BURST_EOCD_NO_CDFH_IN_TAIL;
+}
+
 int burst_writer_finalize(struct burst_writer *writer) {
     if (!writer) {
         return -1;
@@ -675,6 +751,17 @@ int burst_writer_finalize(struct burst_writer *writer) {
     uint64_t central_dir_end = writer->current_offset + writer->buffer_used;
     uint64_t central_dir_size = central_dir_end - central_dir_start;
 
+    // Calculate final archive size to determine first CDFH in tail
+    // Final size = current position + ZIP64 EOCD (56) + ZIP64 locator (20) + EOCD (22) + comment (8)
+    uint64_t final_archive_size = central_dir_end +
+                                   sizeof(struct zip64_end_central_dir) +      // 56 bytes
+                                   sizeof(struct zip64_end_central_dir_locator) + // 20 bytes
+                                   sizeof(struct zip_end_central_dir) +         // 22 bytes
+                                   BURST_EOCD_COMMENT_SIZE;                     // 8 bytes
+
+    uint32_t first_cdfh_offset = find_first_cdfh_in_tail(writer, central_dir_start,
+                                                          final_archive_size);
+
     // Always write ZIP64 EOCD structures
     // Write ZIP64 End of Central Directory Record
     uint64_t eocd64_offset = central_dir_end;
@@ -687,8 +774,9 @@ int burst_writer_finalize(struct burst_writer *writer) {
         return -1;
     }
 
-    // Write standard End of Central Directory record (with ZIP64 markers)
-    if (write_end_central_directory(writer, central_dir_start, central_dir_size) != 0) {
+    // Write standard End of Central Directory record with BURST comment
+    if (write_end_central_directory(writer, central_dir_start, central_dir_size,
+                                     first_cdfh_offset) != 0) {
         return -1;
     }
 

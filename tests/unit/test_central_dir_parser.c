@@ -626,6 +626,391 @@ void test_double_free_protection(void) {
 }
 
 // =============================================================================
+// BURST EOCD Comment Tests
+// =============================================================================
+
+/**
+ * Test: EOCD with no comment returns 0 for first_cdfh_offset_in_tail.
+ */
+void test_eocd_no_burst_comment(void) {
+    uint64_t cd_offset, cd_size;
+    bool is_zip64;
+    uint32_t first_cdfh_offset;
+    char error_msg[256];
+
+    int rc = central_dir_parse_eocd_only(minimal_zip, sizeof(minimal_zip),
+                                          sizeof(minimal_zip),
+                                          &cd_offset, &cd_size, NULL, &is_zip64,
+                                          &first_cdfh_offset, error_msg);
+
+    TEST_ASSERT_EQUAL_INT(CENTRAL_DIR_PARSE_SUCCESS, rc);
+    TEST_ASSERT_EQUAL_UINT32(0, first_cdfh_offset);  // No BURST comment
+}
+
+/**
+ * Test: EOCD with valid BURST comment extracts first_cdfh_offset_in_tail.
+ */
+void test_eocd_with_burst_comment(void) {
+    // Create a buffer with EOCD followed by a BURST comment
+    uint8_t buffer[sizeof(minimal_zip) + BURST_EOCD_COMMENT_SIZE];
+    memcpy(buffer, minimal_zip, sizeof(minimal_zip));
+
+    // Fix the comment length field in EOCD
+    // EOCD starts at offset 102, comment length is at offset +20 from EOCD start
+    buffer[102 + 20] = BURST_EOCD_COMMENT_SIZE;
+    buffer[102 + 21] = 0x00;
+
+    // Add BURST comment:
+    // Magic "BRST" (0x54535242 little-endian), Version 1, Offset as uint24
+    uint8_t *comment = buffer + sizeof(minimal_zip);
+    comment[0] = 0x42;  // 'B' = 0x42
+    comment[1] = 0x52;  // 'R' = 0x52
+    comment[2] = 0x53;  // 'S' = 0x53
+    comment[3] = 0x54;  // 'T' = 0x54
+    comment[4] = BURST_EOCD_COMMENT_VERSION;  // Version 1
+    // Offset = 0x123456 (little-endian uint24)
+    comment[5] = 0x56;
+    comment[6] = 0x34;
+    comment[7] = 0x12;
+
+    uint64_t cd_offset, cd_size;
+    bool is_zip64;
+    uint32_t first_cdfh_offset;
+    char error_msg[256];
+
+    int rc = central_dir_parse_eocd_only(buffer, sizeof(buffer),
+                                          sizeof(buffer),
+                                          &cd_offset, &cd_size, NULL, &is_zip64,
+                                          &first_cdfh_offset, error_msg);
+
+    TEST_ASSERT_EQUAL_INT(CENTRAL_DIR_PARSE_SUCCESS, rc);
+    TEST_ASSERT_EQUAL_UINT32(0x123456, first_cdfh_offset);  // BURST comment parsed
+}
+
+/**
+ * Test: EOCD with invalid BURST magic returns 0 for first_cdfh_offset_in_tail.
+ */
+void test_eocd_with_non_burst_comment(void) {
+    // Create a buffer with EOCD followed by a non-BURST 8-byte comment
+    uint8_t buffer[sizeof(minimal_zip) + 8];
+    memcpy(buffer, minimal_zip, sizeof(minimal_zip));
+
+    // Fix the comment length field in EOCD
+    buffer[102 + 20] = 8;
+    buffer[102 + 21] = 0;
+
+    // Add non-BURST comment
+    memset(buffer + sizeof(minimal_zip), 'X', 8);
+
+    uint64_t cd_offset, cd_size;
+    bool is_zip64;
+    uint32_t first_cdfh_offset;
+    char error_msg[256];
+
+    int rc = central_dir_parse_eocd_only(buffer, sizeof(buffer),
+                                          sizeof(buffer),
+                                          &cd_offset, &cd_size, NULL, &is_zip64,
+                                          &first_cdfh_offset, error_msg);
+
+    TEST_ASSERT_EQUAL_INT(CENTRAL_DIR_PARSE_SUCCESS, rc);
+    TEST_ASSERT_EQUAL_UINT32(0, first_cdfh_offset);  // Non-BURST comment
+}
+
+/**
+ * Test: EOCD with wrong BURST version returns 0 for first_cdfh_offset_in_tail.
+ */
+void test_eocd_with_wrong_burst_version(void) {
+    uint8_t buffer[sizeof(minimal_zip) + BURST_EOCD_COMMENT_SIZE];
+    memcpy(buffer, minimal_zip, sizeof(minimal_zip));
+
+    buffer[102 + 20] = BURST_EOCD_COMMENT_SIZE;
+    buffer[102 + 21] = 0;
+
+    uint8_t *comment = buffer + sizeof(minimal_zip);
+    comment[0] = 0x42;  // 'B'
+    comment[1] = 0x52;  // 'R'
+    comment[2] = 0x53;  // 'S'
+    comment[3] = 0x54;  // 'T'
+    comment[4] = 99;    // Wrong version
+    comment[5] = 0x56;
+    comment[6] = 0x34;
+    comment[7] = 0x12;
+
+    uint64_t cd_offset, cd_size;
+    bool is_zip64;
+    uint32_t first_cdfh_offset;
+    char error_msg[256];
+
+    int rc = central_dir_parse_eocd_only(buffer, sizeof(buffer),
+                                          sizeof(buffer),
+                                          &cd_offset, &cd_size, NULL, &is_zip64,
+                                          &first_cdfh_offset, error_msg);
+
+    TEST_ASSERT_EQUAL_INT(CENTRAL_DIR_PARSE_SUCCESS, rc);
+    TEST_ASSERT_EQUAL_UINT32(0, first_cdfh_offset);  // Wrong version
+}
+
+/**
+ * Test: EOCD with BURST comment indicating no CDFH in tail (sentinel value).
+ */
+void test_eocd_with_burst_comment_no_cdfh(void) {
+    uint8_t buffer[sizeof(minimal_zip) + BURST_EOCD_COMMENT_SIZE];
+    memcpy(buffer, minimal_zip, sizeof(minimal_zip));
+
+    buffer[102 + 20] = BURST_EOCD_COMMENT_SIZE;
+    buffer[102 + 21] = 0;
+
+    uint8_t *comment = buffer + sizeof(minimal_zip);
+    comment[0] = 0x42;  // 'B'
+    comment[1] = 0x52;  // 'R'
+    comment[2] = 0x53;  // 'S'
+    comment[3] = 0x54;  // 'T'
+    comment[4] = BURST_EOCD_COMMENT_VERSION;
+    // Sentinel value: 0xFFFFFF means no complete CDFH in tail
+    comment[5] = 0xFF;
+    comment[6] = 0xFF;
+    comment[7] = 0xFF;
+
+    uint64_t cd_offset, cd_size;
+    bool is_zip64;
+    uint32_t first_cdfh_offset;
+    char error_msg[256];
+
+    int rc = central_dir_parse_eocd_only(buffer, sizeof(buffer),
+                                          sizeof(buffer),
+                                          &cd_offset, &cd_size, NULL, &is_zip64,
+                                          &first_cdfh_offset, error_msg);
+
+    TEST_ASSERT_EQUAL_INT(CENTRAL_DIR_PARSE_SUCCESS, rc);
+    TEST_ASSERT_EQUAL_UINT32(BURST_EOCD_NO_CDFH_IN_TAIL, first_cdfh_offset);
+}
+
+// =============================================================================
+// Partial CD Parsing Tests
+// =============================================================================
+
+/**
+ * Test: Parse partial CD from a simulated tail buffer.
+ *
+ * Simulates a large archive where the tail buffer contains only a portion
+ * of the central directory starting from an offset indicated by BURST comment.
+ */
+void test_partial_cd_parse_basic(void) {
+    // Build a simulated tail buffer containing partial CD data
+    // We'll pretend:
+    // - Archive size: 100 MiB
+    // - CD starts at offset 70 MiB
+    // - Tail buffer starts at offset 92 MiB (last 8 MiB)
+    // - First complete CDFH in tail is at offset 0 within tail (at the start of buffer)
+    //
+    // The first_cdfh_offset is now relative to TAIL START (not CD start), so it's 0.
+
+    uint64_t archive_size = 100ULL * 1024 * 1024;
+    uint64_t cd_offset = 70ULL * 1024 * 1024;
+    uint64_t tail_start = 92ULL * 1024 * 1024;
+    uint32_t first_cdfh_offset_in_tail = 0;  // CDFH at start of tail buffer
+
+    // Create a small buffer with one CDFH entry
+    // The CDFH will be at the start of our "buffer"
+    uint8_t buffer[128];
+    memset(buffer, 0, sizeof(buffer));
+
+    // Central directory header for file "test.txt"
+    uint8_t *cdfh = buffer;
+    cdfh[0] = 0x50; cdfh[1] = 0x4b; cdfh[2] = 0x01; cdfh[3] = 0x02;  // signature
+    // version made by = 20
+    cdfh[4] = 0x14; cdfh[5] = 0x00;
+    // version needed = 10
+    cdfh[6] = 0x0a; cdfh[7] = 0x00;
+    // flags = 0
+    cdfh[8] = 0x00; cdfh[9] = 0x00;
+    // compression = 0
+    cdfh[10] = 0x00; cdfh[11] = 0x00;
+    // mod time/date = 0
+    cdfh[12] = 0x00; cdfh[13] = 0x00;
+    cdfh[14] = 0x00; cdfh[15] = 0x00;
+    // crc32 = 0x12345678
+    cdfh[16] = 0x78; cdfh[17] = 0x56; cdfh[18] = 0x34; cdfh[19] = 0x12;
+    // compressed size = 1000
+    uint32_t comp_size = 1000;
+    memcpy(cdfh + 20, &comp_size, 4);
+    // uncompressed size = 1000
+    memcpy(cdfh + 24, &comp_size, 4);
+    // filename length = 8 ("test.txt")
+    cdfh[28] = 8; cdfh[29] = 0;
+    // extra field length = 0
+    cdfh[30] = 0; cdfh[31] = 0;
+    // file comment length = 0
+    cdfh[32] = 0; cdfh[33] = 0;
+    // disk number start = 0
+    cdfh[34] = 0; cdfh[35] = 0;
+    // internal attributes = 0
+    cdfh[36] = 0; cdfh[37] = 0;
+    // external attributes = 0
+    cdfh[38] = 0; cdfh[39] = 0; cdfh[40] = 0; cdfh[41] = 0;
+    // local header offset = 80 MiB (in part 10)
+    uint32_t local_offset = 80UL * 1024 * 1024;
+    memcpy(cdfh + 42, &local_offset, 4);
+    // filename
+    memcpy(cdfh + 46, "test.txt", 8);
+
+    // Now call partial parse
+    struct central_dir_parse_result result;
+    int rc = central_dir_parse_partial(
+        buffer, sizeof(buffer),
+        tail_start,                 // buffer starts at this archive offset
+        cd_offset,                  // CD starts at this archive offset
+        first_cdfh_offset_in_tail,  // First complete CDFH offset from TAIL START
+        archive_size,
+        BURST_BASE_PART_SIZE,
+        false,                      // not ZIP64
+        &result
+    );
+
+    TEST_ASSERT_EQUAL_INT(CENTRAL_DIR_PARSE_SUCCESS, rc);
+    TEST_ASSERT_EQUAL_size_t(1, result.num_files);
+    TEST_ASSERT_EQUAL_STRING("test.txt", result.files[0].filename);
+    TEST_ASSERT_EQUAL_UINT32(0x12345678, result.files[0].crc32);
+    TEST_ASSERT_EQUAL_UINT64(local_offset, result.files[0].local_header_offset);
+    // Part index: 80 MiB / 8 MiB = 10
+    TEST_ASSERT_EQUAL_UINT32(10, result.files[0].part_index);
+
+    central_dir_parse_result_free(&result);
+}
+
+/**
+ * Test: Partial CD parse with non-zero offset within tail buffer.
+ *
+ * This test verifies the key semantic: first_cdfh_offset is relative to
+ * TAIL START (buffer_start_offset), not CD start. The CDFH is placed at
+ * offset 1024 within the buffer, and the test verifies it's found correctly.
+ */
+void test_partial_cd_parse_nonzero_offset(void) {
+    // Scenario:
+    // - Archive size: 100 MiB
+    // - CD starts at offset 70 MiB
+    // - Tail buffer starts at offset 92 MiB (last 8 MiB)
+    // - First complete CDFH is at offset 1024 within tail buffer
+    //
+    // The first_cdfh_offset (1024) is relative to tail start, NOT CD start.
+    // Old (buggy) code would have used offset = 22 MiB (tail_start - cd_start)
+    // which wouldn't fit in 24 bits for large CDs.
+
+    uint64_t archive_size = 100ULL * 1024 * 1024;
+    uint64_t cd_offset = 70ULL * 1024 * 1024;
+    uint64_t tail_start = 92ULL * 1024 * 1024;
+    uint32_t first_cdfh_offset_in_tail = 1024;  // 1 KiB into tail buffer
+
+    // Create a buffer with CDFH at offset 1024
+    uint8_t buffer[2048];
+    memset(buffer, 0, sizeof(buffer));
+
+    // Central directory header for file "offset_test.txt" at offset 1024
+    uint8_t *cdfh = buffer + 1024;
+    cdfh[0] = 0x50; cdfh[1] = 0x4b; cdfh[2] = 0x01; cdfh[3] = 0x02;  // signature
+    cdfh[4] = 0x14; cdfh[5] = 0x00;  // version made by
+    cdfh[6] = 0x0a; cdfh[7] = 0x00;  // version needed
+    cdfh[8] = 0x00; cdfh[9] = 0x00;  // flags
+    cdfh[10] = 0x00; cdfh[11] = 0x00;  // compression
+    cdfh[12] = 0x00; cdfh[13] = 0x00;  // mod time
+    cdfh[14] = 0x00; cdfh[15] = 0x00;  // mod date
+    // crc32 = 0xDEADBEEF
+    cdfh[16] = 0xEF; cdfh[17] = 0xBE; cdfh[18] = 0xAD; cdfh[19] = 0xDE;
+    // compressed size = 500
+    uint32_t comp_size = 500;
+    memcpy(cdfh + 20, &comp_size, 4);
+    memcpy(cdfh + 24, &comp_size, 4);
+    // filename length = 15 ("offset_test.txt")
+    cdfh[28] = 15; cdfh[29] = 0;
+    cdfh[30] = 0; cdfh[31] = 0;  // extra field length
+    cdfh[32] = 0; cdfh[33] = 0;  // comment length
+    cdfh[34] = 0; cdfh[35] = 0;  // disk number
+    cdfh[36] = 0; cdfh[37] = 0;  // internal attrs
+    cdfh[38] = 0; cdfh[39] = 0; cdfh[40] = 0; cdfh[41] = 0;  // external attrs
+    // local header offset = 85 MiB
+    uint32_t local_offset = 85UL * 1024 * 1024;
+    memcpy(cdfh + 42, &local_offset, 4);
+    memcpy(cdfh + 46, "offset_test.txt", 15);
+
+    struct central_dir_parse_result result;
+    int rc = central_dir_parse_partial(
+        buffer, sizeof(buffer),
+        tail_start,                 // buffer starts at this archive offset
+        cd_offset,                  // CD starts at this archive offset
+        first_cdfh_offset_in_tail,  // 1024 bytes into tail (NOT 22 MiB from CD start!)
+        archive_size,
+        BURST_BASE_PART_SIZE,
+        false,
+        &result
+    );
+
+    TEST_ASSERT_EQUAL_INT(CENTRAL_DIR_PARSE_SUCCESS, rc);
+    TEST_ASSERT_EQUAL_size_t(1, result.num_files);
+    TEST_ASSERT_EQUAL_STRING("offset_test.txt", result.files[0].filename);
+    TEST_ASSERT_EQUAL_UINT32(0xDEADBEEF, result.files[0].crc32);
+    TEST_ASSERT_EQUAL_UINT64(local_offset, result.files[0].local_header_offset);
+    // Part index: 85 MiB / 8 MiB = 10 (integer division)
+    TEST_ASSERT_EQUAL_UINT32(10, result.files[0].part_index);
+
+    central_dir_parse_result_free(&result);
+}
+
+/**
+ * Test: Partial parse with empty buffer returns error.
+ */
+void test_partial_cd_parse_empty_buffer(void) {
+    struct central_dir_parse_result result;
+    int rc = central_dir_parse_partial(
+        NULL, 0,
+        0, 0, 0,
+        100, BURST_BASE_PART_SIZE,
+        false, &result
+    );
+
+    TEST_ASSERT_EQUAL_INT(CENTRAL_DIR_PARSE_ERR_INVALID_BUFFER, rc);
+}
+
+/**
+ * Test: Partial parse with first_cdfh_offset beyond buffer returns error.
+ */
+void test_partial_cd_parse_offset_beyond_buffer(void) {
+    uint8_t buffer[64];
+    memset(buffer, 0, sizeof(buffer));
+
+    struct central_dir_parse_result result;
+    int rc = central_dir_parse_partial(
+        buffer, sizeof(buffer),
+        100,              // buffer_start_offset
+        0,                // central_dir_offset
+        200,              // first_cdfh_offset (beyond buffer)
+        200,              // archive_size
+        BURST_BASE_PART_SIZE,
+        false, &result
+    );
+
+    TEST_ASSERT_EQUAL_INT(CENTRAL_DIR_PARSE_ERR_TRUNCATED, rc);
+}
+
+/**
+ * Test: Partial parse with invalid part_size returns error.
+ */
+void test_partial_cd_parse_invalid_part_size(void) {
+    uint8_t buffer[64];
+    memset(buffer, 0, sizeof(buffer));
+
+    struct central_dir_parse_result result;
+    int rc = central_dir_parse_partial(
+        buffer, sizeof(buffer),
+        0, 0, 0,
+        100,
+        1024 * 1024,  // 1 MiB - not a valid part size (must be multiple of 8 MiB)
+        false, &result
+    );
+
+    TEST_ASSERT_EQUAL_INT(CENTRAL_DIR_PARSE_ERR_INVALID_BUFFER, rc);
+}
+
+// =============================================================================
 // Main
 // =============================================================================
 
@@ -637,6 +1022,20 @@ int main(void) {
     RUN_TEST(test_find_eocd_with_comment);
     RUN_TEST(test_find_eocd_not_found);
     RUN_TEST(test_find_eocd_zip64_detected);
+
+    // BURST EOCD comment tests
+    RUN_TEST(test_eocd_no_burst_comment);
+    RUN_TEST(test_eocd_with_burst_comment);
+    RUN_TEST(test_eocd_with_non_burst_comment);
+    RUN_TEST(test_eocd_with_wrong_burst_version);
+    RUN_TEST(test_eocd_with_burst_comment_no_cdfh);
+
+    // Partial CD parsing tests
+    RUN_TEST(test_partial_cd_parse_basic);
+    RUN_TEST(test_partial_cd_parse_nonzero_offset);
+    RUN_TEST(test_partial_cd_parse_empty_buffer);
+    RUN_TEST(test_partial_cd_parse_offset_beyond_buffer);
+    RUN_TEST(test_partial_cd_parse_invalid_part_size);
 
     // Central directory tests
     RUN_TEST(test_parse_single_file);
