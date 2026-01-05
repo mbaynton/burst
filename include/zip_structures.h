@@ -38,6 +38,20 @@
 #define ZIP_EXTRA_UNIX_7875_ID 0x7875  // Info-ZIP Unix extra field (uid/gid)
 #define ZIP_EXTRA_ZIP64_ID 0x0001      // ZIP64 extended information extra field
 
+// BURST EOCD comment format (8 bytes):
+// Bytes 0-3: Magic "BRST" (0x54535242 little-endian)
+// Byte 4:    Version (uint8_t) - currently 1
+// Bytes 5-7: Offset from TAIL START to first complete CDFH (uint24_t, little-endian)
+//            The tail is the last 8 MiB of the archive.
+//            This offset is relative to (archive_size - 8 MiB), NOT relative to CD start.
+//            If entire CD fits in 8 MiB, value is 0
+//            If no complete CDFH in last 8 MiB, value is 0xFFFFFF
+//            Max representable: ~16 MiB, but always < 8 MiB in practice since offset is within tail
+#define BURST_EOCD_COMMENT_MAGIC 0x54535242  // "BRST" in little-endian
+#define BURST_EOCD_COMMENT_VERSION 1
+#define BURST_EOCD_COMMENT_SIZE 8
+#define BURST_EOCD_NO_CDFH_IN_TAIL 0xFFFFFF  // Sentinel: no complete CDFH in tail
+
 // ZIP local file header (fixed portion)
 struct zip_local_header {
     uint32_t signature;           // 0x04034b50
@@ -144,7 +158,12 @@ int write_zip64_end_central_directory_locator(struct burst_writer *writer,
                                               uint64_t eocd64_offset);
 int write_end_central_directory(struct burst_writer *writer,
                                 uint64_t central_dir_start,
-                                uint64_t central_dir_size);
+                                uint64_t central_dir_size,
+                                uint32_t first_cdfh_offset_in_tail);
+
+// Build BURST EOCD comment containing offset to first complete CDFH in tail buffer
+// Returns: 8-byte comment buffer (caller provides), sets comment to BURST format
+void build_burst_eocd_comment(uint8_t *comment, uint32_t first_cdfh_offset_in_tail);
 
 // Utility functions
 void dos_datetime_from_time_t(time_t t, uint16_t *time_out, uint16_t *date_out);

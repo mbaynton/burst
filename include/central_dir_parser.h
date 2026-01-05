@@ -94,6 +94,14 @@
 // Base part size constant (8 MiB) - used for BURST archive alignment
 #define BURST_BASE_PART_SIZE (8 * 1024 * 1024)
 
+// BURST EOCD comment format constants (must match writer definitions)
+// Format: Magic(4) + Version(1) + Offset(3) = 8 bytes
+// Note: The offset is relative to TAIL START (archive_size - 8 MiB), NOT CD start
+#define BURST_EOCD_COMMENT_MAGIC 0x54535242  // "BRST" in little-endian
+#define BURST_EOCD_COMMENT_VERSION 1
+#define BURST_EOCD_COMMENT_SIZE 8
+#define BURST_EOCD_NO_CDFH_IN_TAIL 0xFFFFFF  // Sentinel: no complete CDFH in tail
+
 /**
  * File metadata extracted from the central directory.
  *
@@ -197,6 +205,13 @@ struct central_dir_parse_result {
  * @param central_dir_size    Output: size of CD in bytes
  * @param num_entries         Output: number of entries in CD (can be NULL if not needed)
  * @param is_zip64            Output: whether this is a ZIP64 archive
+ * @param first_cdfh_offset_in_tail  Output: offset from TAIL START to first complete CDFH
+ *                            within the last 8 MiB of archive (can be NULL if not needed).
+ *                            Value 0 = entire CD fits in tail (no partial CD scenario).
+ *                            Value 0xFFFFFF = no complete CDFH in tail.
+ *                            Other = byte offset from tail start (archive_size - 8 MiB) to
+ *                            the first complete CDFH. Always < 8 MiB.
+ *                            Only valid if BURST EOCD comment is present (otherwise 0).
  * @param error_msg           Output: error message buffer (must be at least 256 bytes)
  * @return CENTRAL_DIR_PARSE_SUCCESS on success, or error code on failure
  */
@@ -206,6 +221,7 @@ int central_dir_parse_eocd_only(const uint8_t *buffer, size_t buffer_size,
                                  uint64_t *central_dir_size,
                                  uint64_t *num_entries,
                                  bool *is_zip64,
+                                 uint32_t *first_cdfh_offset_in_tail,
                                  char *error_msg);
 
 /**
@@ -249,6 +265,39 @@ int central_dir_parse_from_cd_buffer(const uint8_t *cd_buffer, size_t cd_buffer_
                                       uint64_t archive_size, uint64_t part_size,
                                       bool is_zip64,
                                       struct central_dir_parse_result *result);
+
+/**
+ * Parse available CDFH entries from a partial central directory buffer.
+ *
+ * This function is used when the CD extends beyond the tail buffer and we want
+ * to start processing files before the full CD is fetched. It parses whatever
+ * CDFH entries are complete in the buffer, starting from the offset specified
+ * by the BURST EOCD comment.
+ *
+ * @param buffer              Tail buffer (last 8 MiB of archive)
+ * @param buffer_size         Size of tail buffer in bytes
+ * @param buffer_start_offset Absolute offset of buffer start in archive (= archive_size - 8 MiB)
+ * @param central_dir_offset  Offset where CD starts in archive (from EOCD)
+ * @param first_cdfh_offset   Offset from TAIL START to first complete CDFH in buffer
+ *                            (from BURST EOCD comment). This is relative to buffer_start_offset.
+ * @param archive_size        Total archive size
+ * @param part_size           Part size in bytes (must be multiple of 8 MiB)
+ * @param is_zip64            Whether this is a ZIP64 archive
+ * @param result              Output structure to populate with parsed data
+ * @return CENTRAL_DIR_PARSE_SUCCESS on success, or error code on failure
+ *
+ * Note: Unlike central_dir_parse(), this function may return with fewer entries
+ * than actually exist in the archive. The caller should expect num_files to be
+ * smaller than the total archive file count.
+ */
+int central_dir_parse_partial(const uint8_t *buffer, size_t buffer_size,
+                               uint64_t buffer_start_offset,
+                               uint64_t central_dir_offset,
+                               uint32_t first_cdfh_offset,
+                               uint64_t archive_size,
+                               uint64_t part_size,
+                               bool is_zip64,
+                               struct central_dir_parse_result *result);
 
 /**
  * Free resources allocated by central_dir_parse().

@@ -164,4 +164,77 @@ int add_tail_buffer_segment(
  */
 void free_body_segments(struct body_data_segment *segments, size_t num_segments);
 
+// ============================================================================
+// Hybrid Download Coordinator (for partial CD optimization)
+// ============================================================================
+
+// Forward declarations
+struct central_dir_parse_result;
+
+/**
+ * Hybrid download coordinator that combines CD fetches with early part downloads.
+ *
+ * This coordinator implements the partial CD optimization: when the central
+ * directory is larger than 8 MiB, we parse what we have and start downloading
+ * parts for files we know about while fetching the remaining CD data.
+ *
+ * Priority order:
+ * 1. CD range fetches (always dispatched first)
+ * 2. Early part downloads (from partial CD, parts where we have all file metadata)
+ * 3. Late part downloads (after full CD parsed, remaining parts)
+ *
+ * Thread safety: This coordinator uses internal mutexes and is safe for use
+ * from AWS SDK callbacks.
+ */
+struct hybrid_download_coordinator;
+
+/**
+ * Create a hybrid download coordinator.
+ *
+ * @param downloader       Initialized downloader
+ * @param partial_cd       Partial CD parse result (from tail buffer)
+ * @param cd_ranges        Array of CD ranges to fetch
+ * @param num_cd_ranges    Number of CD ranges
+ * @param initial_buffer   Initial tail buffer
+ * @param initial_size     Size of initial buffer
+ * @param initial_start    Archive offset where initial buffer starts
+ * @param archive_size     Total archive size
+ * @param is_zip64         Whether archive uses ZIP64
+ * @return Allocated coordinator, or NULL on error
+ */
+struct hybrid_download_coordinator *hybrid_coordinator_create(
+    struct burst_downloader *downloader,
+    struct central_dir_parse_result *partial_cd,
+    const struct cd_part_range *cd_ranges,
+    size_t num_cd_ranges,
+    uint8_t *initial_buffer,
+    size_t initial_size,
+    uint64_t initial_start,
+    uint64_t archive_size,
+    bool is_zip64
+);
+
+/**
+ * Run the hybrid download coordinator.
+ *
+ * This function blocks until all CD fetches and part downloads complete.
+ * It dispatches CD fetches with priority, then fills remaining concurrency
+ * slots with early part downloads (parts where we have complete file metadata).
+ * After the full CD is assembled and parsed, it dispatches remaining parts.
+ *
+ * @param coord  Coordinator created by hybrid_coordinator_create()
+ * @return 0 on success, non-zero on error
+ */
+int hybrid_coordinator_run(struct hybrid_download_coordinator *coord);
+
+/**
+ * Destroy a hybrid download coordinator.
+ *
+ * Frees all resources including the full CD parse result.
+ * Does NOT free the partial_cd passed to create() - caller owns that.
+ *
+ * @param coord  Coordinator to destroy (can be NULL)
+ */
+void hybrid_coordinator_destroy(struct hybrid_download_coordinator *coord);
+
 #endif // CD_FETCH_H

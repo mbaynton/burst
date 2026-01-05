@@ -225,9 +225,26 @@ int write_zip64_end_central_directory_locator(struct burst_writer *writer,
     return burst_writer_write(writer, &locator, sizeof(locator));
 }
 
+void build_burst_eocd_comment(uint8_t *comment, uint32_t first_cdfh_offset_in_tail) {
+    // Bytes 0-3: Magic "BRST" (little-endian)
+    uint32_t magic = BURST_EOCD_COMMENT_MAGIC;
+    memcpy(comment, &magic, 4);
+
+    // Byte 4: Version
+    comment[4] = BURST_EOCD_COMMENT_VERSION;
+
+    // Bytes 5-7: Offset as uint24 (little-endian)
+    // Mask to 24 bits to ensure we don't overflow
+    uint32_t offset_24 = first_cdfh_offset_in_tail & 0xFFFFFF;
+    comment[5] = (uint8_t)(offset_24 & 0xFF);
+    comment[6] = (uint8_t)((offset_24 >> 8) & 0xFF);
+    comment[7] = (uint8_t)((offset_24 >> 16) & 0xFF);
+}
+
 int write_end_central_directory(struct burst_writer *writer,
                                 uint64_t central_dir_start,
-                                uint64_t central_dir_size) {
+                                uint64_t central_dir_size,
+                                uint32_t first_cdfh_offset_in_tail) {
     struct zip_end_central_dir eocd;
     memset(&eocd, 0, sizeof(eocd));
 
@@ -242,9 +259,17 @@ int write_end_central_directory(struct burst_writer *writer,
     eocd.num_entries_total = (writer->num_files > 0xFFFE) ? 0xFFFF : (uint16_t)writer->num_files;
     eocd.central_dir_size = (central_dir_size > 0xFFFFFFFE) ? 0xFFFFFFFF : (uint32_t)central_dir_size;
     eocd.central_dir_offset = (central_dir_start > 0xFFFFFFFE) ? 0xFFFFFFFF : (uint32_t)central_dir_start;
-    eocd.comment_length = 0;
+    eocd.comment_length = BURST_EOCD_COMMENT_SIZE;
 
-    return burst_writer_write(writer, &eocd, sizeof(eocd));
+    // Write EOCD header
+    if (burst_writer_write(writer, &eocd, sizeof(eocd)) != 0) {
+        return -1;
+    }
+
+    // Write BURST comment
+    uint8_t comment[BURST_EOCD_COMMENT_SIZE];
+    build_burst_eocd_comment(comment, first_cdfh_offset_in_tail);
+    return burst_writer_write(writer, comment, BURST_EOCD_COMMENT_SIZE);
 }
 
 int write_padding_lfh(struct burst_writer *writer, size_t target_size) {

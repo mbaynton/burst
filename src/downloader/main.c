@@ -189,13 +189,15 @@ int burst_downloader_extract(struct burst_downloader *downloader) {
     uint64_t central_dir_size = 0;
     uint64_t num_entries = 0;
     bool is_zip64 = false;
+    uint32_t first_cdfh_offset_in_tail = 0;
     char eocd_error[256] = {0};
     bool used_assembled_buffer = false;
 
     printf("Parsing EOCD to determine central directory extent...\n");
     int eocd_rc = central_dir_parse_eocd_only(initial_buffer, initial_size, object_size,
                                                &central_dir_offset, &central_dir_size,
-                                               &num_entries, &is_zip64, eocd_error);
+                                               &num_entries, &is_zip64,
+                                               &first_cdfh_offset_in_tail, eocd_error);
     if (eocd_rc != CENTRAL_DIR_PARSE_SUCCESS) {
         fprintf(stderr, "Failed to parse EOCD: %s\n", eocd_error);
         goto cleanup;
@@ -220,6 +222,60 @@ int burst_downloader_extract(struct burst_downloader *downloader) {
             goto cleanup;
         }
 
+        // Check for BURST EOCD comment - enables hybrid optimization path
+        if (first_cdfh_offset_in_tail != 0 &&
+            first_cdfh_offset_in_tail != BURST_EOCD_NO_CDFH_IN_TAIL &&
+            num_cd_ranges > 0) {
+            // Parse partial CD from tail buffer
+            printf("Using partial CD optimization (first CDFH at offset %u in CD)...\n",
+                   first_cdfh_offset_in_tail);
+
+            struct central_dir_parse_result partial_cd = {0};
+            int partial_rc = central_dir_parse_partial(
+                initial_buffer, initial_size,
+                initial_start, central_dir_offset,
+                first_cdfh_offset_in_tail,
+                object_size, downloader->part_size,
+                is_zip64, &partial_cd);
+
+            if (partial_rc == CENTRAL_DIR_PARSE_SUCCESS && partial_cd.num_files > 0) {
+                printf("Partial CD: %zu files parsed from tail buffer\n", partial_cd.num_files);
+
+                // Create hybrid coordinator for parallel CD fetch + part downloads
+                struct hybrid_download_coordinator *coord =
+                    hybrid_coordinator_create(downloader, &partial_cd,
+                                              cd_ranges, num_cd_ranges,
+                                              initial_buffer, initial_size,
+                                              initial_start, object_size, is_zip64);
+
+                if (coord) {
+                    printf("Starting hybrid download (CD fetch + early parts)...\n");
+                    result = hybrid_coordinator_run(coord);
+
+                    hybrid_coordinator_destroy(coord);
+                    central_dir_parse_result_free(&partial_cd);
+
+                    if (result == 0) {
+                        printf("\nExtraction complete!\n");
+                    }
+
+                    // Skip to cleanup - hybrid coordinator handles everything
+                    goto cleanup;
+                } else {
+                    fprintf(stderr, "Failed to create hybrid coordinator, falling back to sequential path\n");
+                    central_dir_parse_result_free(&partial_cd);
+                }
+            } else {
+                if (partial_rc != CENTRAL_DIR_PARSE_SUCCESS) {
+                    printf("Partial CD parse failed (error %d), using sequential path\n", partial_rc);
+                } else {
+                    printf("No files in partial CD, using sequential path\n");
+                }
+                central_dir_parse_result_free(&partial_cd);
+            }
+        }
+
+        // Sequential path: fetch all CD ranges first, then download parts
         if (num_cd_ranges > 0) {
             printf("Fetching %zu additional range(s) for central directory...\n", num_cd_ranges);
 
