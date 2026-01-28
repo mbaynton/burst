@@ -1,0 +1,92 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libzstd-dev zlib1g-dev cmake ruby
+
+    - name: Build (Release)
+      run: |
+        mkdir build
+        cd build
+        cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_DOWNLOADER=ON ..
+        make
+
+    - name: Run unit tests
+      run: cd build && ctest -L unit --output-on-failure
+
+    - name: Get version
+      id: version
+      run: echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+    - name: Package
+      run: |
+        VERSION=${{ steps.version.outputs.version }}
+        ARCH=${{ matrix.arch }}
+        PKG_NAME="burst-${VERSION}-linux-${ARCH}"
+
+        mkdir -p "${PKG_NAME}"
+        cp build/burst-writer "${PKG_NAME}/"
+        cp build/burst-downloader "${PKG_NAME}/"
+        cp README.md LICENSE "${PKG_NAME}/"
+
+        tar -czvf "${PKG_NAME}.tar.gz" "${PKG_NAME}"
+        sha256sum "${PKG_NAME}.tar.gz" > "${PKG_NAME}.tar.gz.sha256"
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: burst-linux-${{ matrix.arch }}
+        path: |
+          burst-*.tar.gz
+          burst-*.tar.gz.sha256
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+        merge-multiple: true
+
+    - name: Create combined checksums file
+      run: |
+        cd artifacts
+        cat *.sha256 > checksums.txt
+        cat checksums.txt
+
+    - name: Create release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: |
+          artifacts/*.tar.gz
+          artifacts/*.sha256
+          artifacts/checksums.txt
+        generate_release_notes: true
+        draft: false

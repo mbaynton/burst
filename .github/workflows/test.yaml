@@ -1,6 +1,11 @@
 name: BURST Tests
 
-on: [push, pull_request]
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
 
 permissions:
   id-token: write # Required for OIDC authentication

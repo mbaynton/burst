@@ -1,6 +1,6 @@
 # BURST - BTRFS Ultrafast Restore from S3 Transfers
 
-[![BURST Tests](https://github.com/mbaynton/burst/actions/workflows/test.yaml/badge.svg)](https://github.com/mbaynton/burst/actions/workflows/test.yaml)
+[![BURST Tests](https://github.com/posit-dev/burst/actions/workflows/test.yaml/badge.svg)](https://github.com/posit-dev/burst/actions/workflows/test.yaml)
 
 BURST is software and a zip-based archive format that offers an optimized integration between Amazon S3 and the BTRFS Linux
 filesystem. It is probably the fastest way to load large numbers of files onto an EC2 instance from S3.
@@ -9,7 +9,21 @@ BURST can also be used without BTRFS, with different but generally good performa
 
 ## Installation
 
-TBD
+Download the latest release for your platform from [GitHub Releases](https://github.com/posit-dev/burst/releases).
+
+```bash
+# Example for Linux x86_64 (replace v1.0.0 with the latest version)
+VERSION=v1.0.0
+curl -LO https://github.com/posit-dev/burst/releases/download/${VERSION}/burst-${VERSION}-linux-x86_64.tar.gz
+tar -xzf burst-${VERSION}-linux-x86_64.tar.gz
+sudo mv burst-${VERSION}-linux-x86_64/burst-writer burst-${VERSION}-linux-x86_64/burst-downloader /usr/local/bin/
+```
+
+Verify the download (optional):
+```bash
+curl -LO https://github.com/posit-dev/burst/releases/download/${VERSION}/checksums.txt
+sha256sum -c checksums.txt --ignore-missing
+```
 
 ## Basic Usage
 
@@ -110,7 +124,7 @@ See the `docs/` folder for an overview of the BURST format and principles of its
 
 ### Prerequisites
 ```bash
-sudo apt-get install -y cmake libzstd-dev zlib1g-dev python3
+sudo apt-get install -y ruby cmake libzstd-dev zlib1g-dev
 ```
 
 ### Build Steps
@@ -130,8 +144,7 @@ To run the Zstandard compression tests, you need 7-Zip with Zstandard codec supp
 
 #### Additional Testing Dependencies
 ```bash
-# Install Ruby (required for CMock unit test framework)
-sudo apt-get install -y ruby unzip
+sudo apt-get install -y unzip
 ```
 
 ## Running Tests
