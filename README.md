@@ -1,6 +1,6 @@
 # BURST - BTRFS Ultrafast Restore from S3 Transfers
 
-[![BURST Tests](https://github.com/mbaynton/burst/actions/workflows/test.yaml/badge.svg)](https://github.com/mbaynton/burst/actions/workflows/test.yaml)
+[![BURST Tests](https://github.com/posit-dev/burst/actions/workflows/test.yaml/badge.svg)](https://github.com/posit-dev/burst/actions/workflows/test.yaml)
 
 BURST is software and a zip-based archive format that offers an optimized integration between Amazon S3 and the BTRFS Linux
 filesystem. It is probably the fastest way to load large numbers of files onto an EC2 instance from S3.
@@ -110,7 +110,7 @@ See the `docs/` folder for an overview of the BURST format and principles of its
 
 ### Prerequisites
 ```bash
-sudo apt-get install -y cmake libzstd-dev zlib1g-dev python3
+sudo apt-get install -y ruby cmake libzstd-dev zlib1g-dev
 ```
 
 ### Build Steps
@@ -130,8 +130,7 @@ To run the Zstandard compression tests, you need 7-Zip with Zstandard codec supp
 
 #### Additional Testing Dependencies
 ```bash
-# Install Ruby (required for CMock unit test framework)
-sudo apt-get install -y ruby unzip
+sudo apt-get install -y unzip
 ```
 
 ## Running Tests
