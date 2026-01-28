@@ -9,7 +9,21 @@ BURST can also be used without BTRFS, with different but generally good performa
 
 ## Installation
 
-TBD
+Download the latest release for your platform from [GitHub Releases](https://github.com/posit-dev/burst/releases).
+
+```bash
+# Example for Linux x86_64 (replace v1.0.0 with the latest version)
+VERSION=v1.0.0
+curl -LO https://github.com/posit-dev/burst/releases/download/${VERSION}/burst-${VERSION}-linux-x86_64.tar.gz
+tar -xzf burst-${VERSION}-linux-x86_64.tar.gz
+sudo mv burst-${VERSION}-linux-x86_64/burst-writer burst-${VERSION}-linux-x86_64/burst-downloader /usr/local/bin/
+```
+
+Verify the download (optional):
+```bash
+curl -LO https://github.com/posit-dev/burst/releases/download/${VERSION}/checksums.txt
+sha256sum -c checksums.txt --ignore-missing
+```
 
 ## Basic Usage
 
