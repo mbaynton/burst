@@ -31,11 +31,3 @@ Each release includes:
 | `burst-vX.Y.Z-linux-arm64.tar.gz` | Linux ARM64 binaries |
 | `*.sha256` | Individual checksums |
 | `checksums.txt` | Combined checksums file |
-
-## Version Numbering
-
-Use [semantic versioning](https://semver.org/): `vMAJOR.MINOR.PATCH`
-
-- MAJOR: Breaking changes to CLI interface or BURST format
-- MINOR: New features, backward compatible
-- PATCH: Bug fixes
